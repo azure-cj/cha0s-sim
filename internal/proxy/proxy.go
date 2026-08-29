@@ -24,7 +24,11 @@ func New(target *url.URL, preserveHost bool, insecureSkipVerify bool, store *con
 	return proxy
 }
 
-func NewServerInstance(port int, target *url.URL, preserveHost bool, insecureSkipVerify bool, verbose bool, store *config.Store) *http.Server {
+// NewServerInstance builds an *http.Server serving the chaos proxy. The final
+// variadic sink argument is optional: when provided, one TrafficEvent is
+// emitted per request (the desktop app uses this to feed the live traffic
+// view). The headless CLI omits it entirely and behaves exactly as before.
+func NewServerInstance(port int, target *url.URL, preserveHost bool, insecureSkipVerify bool, verbose bool, store *config.Store, sinks ...EventSink) *http.Server {
 	proxy := New(target, preserveHost, insecureSkipVerify, store)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if IsWebSocketUpgrade(req) {
@@ -35,9 +39,15 @@ func NewServerInstance(port int, target *url.URL, preserveHost bool, insecureSki
 		}
 		ChaosMiddleware(store, http.HandlerFunc(proxy.ServeHTTP)).ServeHTTP(w, req)
 	})
+
+	serverHandler := http.Handler(logger.Middleware(verbose, handler))
+	if len(sinks) > 0 {
+		serverHandler = withEventSink(sinks[0], serverHandler)
+	}
+
 	return &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
-		Handler: logger.Middleware(verbose, handler),
+		Handler: serverHandler,
 	}
 }
 

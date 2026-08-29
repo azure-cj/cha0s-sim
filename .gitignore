@@ -1,0 +1,12 @@
+# Go build artifacts
+*.exe
+*.test
+*.out
+
+# Wails frontend (generated / heavy)
+frontend/node_modules/
+frontend/dist/
+frontend/package.json.md5
+
+# Wails build output
+build/bin/
