@@ -1,0 +1,65 @@
+# cha0s-sim example configuration.
+#
+# Each top-level entry under `rules` is a chaos rule applied to matching
+# requests. A rule targets requests by either an exact `path` or a regular
+# expression `path_regex` (never both). At least one of the two must be set.
+#
+# Copy this file to `configs/chaos.yaml` and tweak to your liking, then run:
+#   cha0s-sim --target=http://localhost:3000 --port=8080 --config configs/chaos.yaml
+#
+# >>> IMPORTANT <<<
+# `enabled: true` is REQUIRED for a rule to ever match — omitting this field or
+# setting it to false means the rule is silently inert. This is easy to forget;
+# double-check every rule you add.
+rules:
+  # Rule 1: exact path match with latency injection.
+  # Every GET to /api/users is delayed by a fixed 250ms plus up to 50ms of jitter,
+  # and fails (returns an error surface) 5% of the time.
+  - name: "users latency chaos"
+    enabled: true
+    path: "/api/users"
+    methods:
+      - GET
+      - POST
+    latency:
+      fixed_ms: 250
+      jitter_min_ms: 0
+      jitter_max_ms: 50
+    error_rate: 0.05
+
+  # Rule 2: regex path match with a status override.
+  # Any request under /api/orders/... is forced to return HTTP 503, emulating a
+  # backend outage, and the response body is stripped.
+  - name: "orders outage simulation"
+    enabled: true
+    path_regex: "^/api/orders/.*"
+    methods:
+      - GET
+      - POST
+      - PUT
+    status_override:
+      code: 503
+      strip_body: true
+
+  # Rule 3: mangle responses targeting a known field.
+  # Matches the user profile endpoint and enables the "delete_keys" strategy for
+  # the "address" and "ssn" top-level JSON fields, simulating data exfiltration
+  # caused by a misbehaving integration.
+  - name: "profile payload mangling"
+    enabled: true
+    path: "/api/profile"
+    methods:
+      - GET
+    mangle:
+      enabled: true
+      strategy: delete_keys
+      target_keys:
+        - address
+        - ssn
+
+  # Rule 4: disabled by default - keep this rule here as a documentation example.
+  # Disabled rules are parsed and validated but never applied.
+  - name: "example disabled rule"
+    enabled: false
+    path: "/api/legacy"
+    drop_connection: true
