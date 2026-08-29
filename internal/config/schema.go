@@ -7,6 +7,8 @@ import (
 
 var validMangleStrategies = map[string]bool{"delete_keys": true, "corrupt_types": true}
 
+var validFuzzStrategies = map[string]bool{"sqli": true, "xss": true, "path_traversal": true}
+
 type Config struct {
 	Rules []Rule `yaml:"rules"`
 }
@@ -23,6 +25,7 @@ type Rule struct {
 	StatusOverride *StatusConfig     `yaml:"status_override,omitempty"`
 	DropConnection bool              `yaml:"drop_connection,omitempty"`
 	Mangle         *MangleConfig     `yaml:"mangle,omitempty"`
+	Fuzz           *FuzzConfig       `yaml:"fuzz,omitempty"`
 }
 
 type LatencyConfig struct {
@@ -38,6 +41,16 @@ type StatusConfig struct {
 
 type MangleConfig struct {
 	Enabled    bool     `yaml:"enabled"`
+	Strategy   string   `yaml:"strategy"`
+	TargetKeys []string `yaml:"target_keys,omitempty"`
+}
+
+// FuzzConfig configures request-side active fuzzing: injected payloads are
+// substituted into string-valued JSON request body fields. Strategy is one of
+// the chaos package's FuzzSQLi/FuzzXSS/FuzzPathTraversal constants; TargetKeys
+// has the same semantics as MangleConfig.TargetKeys (empty = all top-level
+// keys).
+type FuzzConfig struct {
 	Strategy   string   `yaml:"strategy"`
 	TargetKeys []string `yaml:"target_keys,omitempty"`
 }
@@ -111,6 +124,12 @@ func validateRule(rule *Rule, id string) []string {
 	if rule.Mangle != nil && rule.Mangle.Enabled {
 		if !validMangleStrategies[rule.Mangle.Strategy] {
 			appendProblem("invalid mangle strategy '%s', must be one of: delete_keys, corrupt_types", rule.Mangle.Strategy)
+		}
+	}
+
+	if rule.Fuzz != nil {
+		if !validFuzzStrategies[rule.Fuzz.Strategy] {
+			appendProblem("invalid fuzz strategy '%s', must be one of: sqli, xss, path_traversal", rule.Fuzz.Strategy)
 		}
 	}
 

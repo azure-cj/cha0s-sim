@@ -37,5 +37,9 @@ func BuildInjectors(rule config.Rule) (reqInjectors []RequestInjector, respInjec
 		reqInjectors = append(reqInjectors, NewLatencyInjector(rule.Latency))
 	}
 
+	if rule.Fuzz != nil {
+		reqInjectors = append(reqInjectors, NewFuzzInjector(rule.Fuzz))
+	}
+
 	return reqInjectors, respInjectors
 }

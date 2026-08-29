@@ -82,6 +82,27 @@ func TestValidate(t *testing.T) {
 			contains: []string{"invalid mangle strategy 'bogus', must be one of: delete_keys, corrupt_types"},
 		},
 		{
+			name: "invalid fuzz strategy",
+			config: Config{
+				Rules: []Rule{
+					{Path: "/api", Fuzz: &FuzzConfig{Strategy: "bogus"}},
+				},
+			},
+			wantErr:  true,
+			contains: []string{"invalid fuzz strategy 'bogus', must be one of: sqli, xss, path_traversal"},
+		},
+		{
+			name: "valid fuzz strategy passes",
+			config: Config{
+				Rules: []Rule{
+					{Path: "/api", Fuzz: &FuzzConfig{Strategy: "sqli"}},
+					{Path: "/api2", Fuzz: &FuzzConfig{Strategy: "xss"}},
+					{Path: "/api3", Fuzz: &FuzzConfig{Strategy: "path_traversal"}},
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "latency jitter min greater than max",
 			config: Config{
 				Rules: []Rule{

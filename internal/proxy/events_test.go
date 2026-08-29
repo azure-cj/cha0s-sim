@@ -10,28 +10,35 @@ import (
 	"time"
 
 	"cha0s-sim/internal/config"
+	"cha0s-sim/internal/platform"
 )
 
 type collectingSink struct {
-	events chan TrafficEvent
+	events chan platform.Reportable
 }
 
 func newCollectingSink() *collectingSink {
-	return &collectingSink{events: make(chan TrafficEvent, 16)}
+	return &collectingSink{events: make(chan platform.Reportable, 16)}
 }
 
-func (s *collectingSink) Emit(evt TrafficEvent) {
+func (s *collectingSink) Emit(evt platform.Reportable) {
 	s.events <- evt
 }
 
 func (s *collectingSink) next(t *testing.T) TrafficEvent {
 	t.Helper()
-	select {
-	case evt := <-s.events:
-		return evt
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for traffic event")
-		return TrafficEvent{}
+	for {
+		select {
+		case evt := <-s.events:
+			if te, ok := evt.(TrafficEvent); ok {
+				return te
+			}
+			// Security findings flow through the same (Reportable-widened)
+			// sink; traffic-focused tests skip past them.
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for traffic event")
+			return TrafficEvent{}
+		}
 	}
 }
 
@@ -244,4 +251,40 @@ func contains(items []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestTrafficEventImplementsReportable(t *testing.T) {
+	var reportable platform.Reportable = TrafficEvent{
+		Method:     http.MethodGet,
+		Path:       "/api/users",
+		Status:     http.StatusOK,
+		DurationMs: 7,
+	}
+	if reportable.Category() != "traffic" {
+		t.Errorf("Category() = %q, want %q", reportable.Category(), "traffic")
+	}
+	if reportable.Summary() != "GET /api/users -> 200 (7ms)" {
+		t.Errorf("Summary() = %q, want %q", reportable.Summary(), "GET /api/users -> 200 (7ms)")
+	}
+	if reportable.Severity() != "info" {
+		t.Errorf("Severity() = %q, want %q", reportable.Severity(), "info")
+	}
+}
+
+func TestTrafficEventSeverityMapping(t *testing.T) {
+	cases := []struct {
+		status int
+		want   string
+	}{
+		{status: 0, want: "critical"},   // dropped connection, no response
+		{status: 500, want: "critical"}, // server error
+		{status: 404, want: "warning"},
+		{status: 200, want: "info"},
+	}
+	for _, tc := range cases {
+		evt := TrafficEvent{Status: tc.status}
+		if got := evt.Severity(); got != tc.want {
+			t.Errorf("Status %d Severity() = %q, want %q", tc.status, got, tc.want)
+		}
+	}
 }

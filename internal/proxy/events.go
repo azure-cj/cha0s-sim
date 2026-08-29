@@ -10,13 +10,15 @@ import (
 	"time"
 
 	"cha0s-sim/internal/config"
+	"cha0s-sim/internal/platform"
 )
 
-// EventSink receives one TrafficEvent per proxied request. The headless CLI
-// passes no sink (nil — nothing is emitted and behavior is unchanged); the
-// desktop app provides a sink that forwards events to the frontend.
+// EventSink consumes platform.Reportable items (traffic events, security
+// findings, and any future reportable). The headless CLI passes no sink (nil —
+// nothing is emitted and behavior is unchanged); the desktop app provides a
+// sink that forwards events to the frontend.
 type EventSink interface {
-	Emit(evt TrafficEvent)
+	Emit(evt platform.Reportable)
 }
 
 // TrafficEvent is a single normalized, post-hoc record of a request that went
@@ -31,6 +33,28 @@ type TrafficEvent struct {
 	DurationMs int64         `json:"duration_ms"` // wall-clock time from start to response/drop
 	Effects    []ChaosEffect `json:"effects"`     // empty when the request passed through cleanly
 }
+
+// TrafficEvent implements platform.Reportable so live traffic flows through
+// the same aggregated platform event log as security findings.
+func (e TrafficEvent) Category() string { return "traffic" }
+
+func (e TrafficEvent) Summary() string {
+	return fmt.Sprintf("%s %s -> %d (%dms)", e.Method, e.Path, e.Status, e.DurationMs)
+}
+
+func (e TrafficEvent) Severity() string {
+	switch {
+	case e.Status == 0 || e.Status >= 500:
+		return "critical"
+	case e.Status >= 400:
+		return "warning"
+	default:
+		return "info"
+	}
+}
+
+// compile-time check that TrafficEvent satisfies platform.Reportable.
+var _ platform.Reportable = TrafficEvent{}
 
 // ChaosEffect attributes a single chaos action to the rule that caused it.
 type ChaosEffect struct {

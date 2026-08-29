@@ -10,7 +10,9 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"cha0s-sim/internal/config"
+	"cha0s-sim/internal/platform"
 	"cha0s-sim/internal/proxy"
+	"cha0s-sim/internal/security"
 )
 
 const (
@@ -32,15 +34,25 @@ func NewApp() *App {
 	return &App{}
 }
 
-// trafficEventSink forwards proxy traffic events to the frontend over Wails'
-// event bus. It lives on an unexported type so its method is NOT exposed as a
-// frontend-callable binding — the frontend only subscribes via EventsOn.
+// trafficEventSink forwards proxy traffic events and security findings to the
+// frontend over Wails' event bus. It lives on an unexported type so its method
+// is NOT exposed as a frontend-callable binding — the frontend only subscribes
+// via EventsOn.
 type trafficEventSink struct {
 	ctx context.Context
 }
 
-func (s trafficEventSink) Emit(evt proxy.TrafficEvent) {
-	runtime.EventsEmit(s.ctx, "traffic", evt)
+func (s trafficEventSink) Emit(evt platform.Reportable) {
+	switch v := evt.(type) {
+	case proxy.TrafficEvent:
+		runtime.EventsEmit(s.ctx, "traffic", v)
+	case security.Finding:
+		runtime.EventsEmit(s.ctx, "security_finding", v)
+	default:
+		// Fallback for any future Reportable type: emit generically so nothing
+		// is silently dropped.
+		runtime.EventsEmit(s.ctx, "platform_event", evt)
+	}
 }
 
 // startup is called when the app starts. The context is saved
