@@ -27,6 +27,7 @@ var rootCmd = &cobra.Command{
 		verbose, _ := cmd.Flags().GetBool("verbose")
 		configPath, _ := cmd.Flags().GetString("config")
 		adminPort, _ := cmd.Flags().GetInt("admin-port")
+		noAdmin, _ := cmd.Flags().GetBool("no-admin")
 
 		u, err := url.ParseRequestURI(target)
 		if err != nil {
@@ -52,13 +53,12 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
-		return run(port, u, preserveHost, insecureSkipVerify, verbose, adminPort, store)
+		return run(port, u, preserveHost, insecureSkipVerify, verbose, adminPort, !noAdmin, store)
 	},
 }
 
-func run(port int, u *url.URL, preserveHost, insecureSkipVerify, verbose bool, adminPort int, store *config.Store) error {
+func run(port int, u *url.URL, preserveHost, insecureSkipVerify, verbose bool, adminPort int, runAdmin bool, store *config.Store) error {
 	proxySrv := proxy.NewServerInstance(port, u, preserveHost, insecureSkipVerify, verbose, store)
-	adminSrv := admin.NewServer(adminPort, store)
 
 	errCh := make(chan error, 2)
 
@@ -69,11 +69,15 @@ func run(port int, u *url.URL, preserveHost, insecureSkipVerify, verbose bool, a
 		}
 	}()
 
-	go func() {
-		if err := adminSrv.Start(); err != nil && err != http.ErrServerClosed {
-			errCh <- err
-		}
-	}()
+	var adminSrv *admin.Server
+	if runAdmin {
+		adminSrv = admin.NewServer(adminPort, store)
+		go func() {
+			if err := adminSrv.Start(); err != nil && err != http.ErrServerClosed {
+				errCh <- err
+			}
+		}()
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -91,8 +95,10 @@ func run(port int, u *url.URL, preserveHost, insecureSkipVerify, verbose bool, a
 	if shutdownErr != nil {
 		return fmt.Errorf("proxy shutdown: %w", shutdownErr)
 	}
-	if err := adminSrv.Shutdown(); err != nil {
-		return fmt.Errorf("admin shutdown: %w", err)
+	if adminSrv != nil {
+		if err := adminSrv.Shutdown(); err != nil {
+			return fmt.Errorf("admin shutdown: %w", err)
+		}
 	}
 
 	fmt.Fprintln(os.Stderr, "shutdown complete")
@@ -112,6 +118,7 @@ func init() {
 	rootCmd.Flags().Bool("insecure-skip-verify", false, "skip TLS certificate verification for the target (use only for local self-signed certs — insecure)")
 	rootCmd.Flags().String("config", "chaos.yaml", "path to the chaos configuration file (yaml or json)")
 	rootCmd.Flags().Int("admin-port", 8090, "port for the admin dashboard server to listen on")
+	rootCmd.Flags().Bool("no-admin", false, "do not start the admin dashboard server")
 	rootCmd.MarkFlagRequired("target")
 }
 
