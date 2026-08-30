@@ -277,7 +277,7 @@ function ChaosEngine() {
             // Toggled in-memory but could not be persisted to disk: keep the
             // flipped state (the toggle DID take effect for live traffic) and
             // show a soft amber warning that fades after a few seconds.
-            setRuleWarning(rule.name, result);
+            setRuleWarning(rule.name, result.slice('warning:'.length).trim());
             loadRules();
             return;
         }
