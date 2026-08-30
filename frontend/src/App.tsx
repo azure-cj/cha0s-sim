@@ -1,6 +1,6 @@
-import {useEffect, useRef, useState} from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
 import {EventsOn} from "../wailsjs/runtime/runtime";
-import {GetSettings, GetStatus, GetRuleCount, SaveSettings, StartProxy, StopProxy} from "../wailsjs/go/main/App";
+import {GetRules, GetRuleCount, GetSettings, GetStatus, SaveSettings, StartProxy, StopProxy, ToggleRule} from "../wailsjs/go/main/App";
 import {main} from '../wailsjs/go/models';
 import bootBackground from './assets/images/boot-background.jpg';
 import './App.css';
@@ -78,6 +78,30 @@ function summarizeTraffic(evt: TrafficEventPayload): string {
         return `${e.kind}${detail}`;
     }).join(', ');
     return `${base} [${effects}]`;
+}
+
+function chaosPathLabel(r: main.RuleView): string {
+    if (r.pathRegex) return `regex: ${r.pathRegex}`;
+    return r.path || 'ANY';
+}
+
+function chaosMethodsLabel(r: main.RuleView): string {
+    if (!r.methods || r.methods.length === 0) return 'ALL';
+    return r.methods.join(', ');
+}
+
+function chaosErrorRateLabel(r: main.RuleView): string {
+    return `${Math.round((r.errorRate || 0) * 100)}%`;
+}
+
+function chaosTags(r: main.RuleView): string[] {
+    const tags: string[] = [];
+    if (r.hasLatency) tags.push('Latency');
+    if (r.hasStatusOverride) tags.push('Status Override');
+    if (r.hasDropConnection) tags.push('Drop');
+    if (r.hasMangle) tags.push('Mangle');
+    if (r.hasFuzz) tags.push('Fuzz');
+    return tags;
 }
 
 function SettingsForm({running}: {running: boolean}) {
@@ -188,6 +212,92 @@ function SettingsForm({running}: {running: boolean}) {
                     {success && <span className="settings-success">Settings saved</span>}
                 </div>
             </form>
+        </div>
+    );
+}
+
+function ChaosEngine() {
+    const [rules, setRules] = useState<main.RuleView[]>([]);
+    const [errors, setErrors] = useState<Record<string, string>>({});
+    const [pending, setPending] = useState<string | null>(null);
+
+    const loadRules = useCallback(() => {
+        GetRules().then(setRules);
+    }, []);
+
+    useEffect(() => {
+        loadRules();
+    }, [loadRules]);
+
+    const toggle = async (rule: main.RuleView, newEnabled: boolean) => {
+        if (pending !== null) return;
+        setPending(rule.name);
+        setErrors(prev => {
+            if (!prev[rule.name]) return prev;
+            const next = {...prev};
+            delete next[rule.name];
+            return next;
+        });
+        setRules(prev => prev.map(r => (r.name === rule.name ? {...r, enabled: newEnabled} : r)));
+        const err = await ToggleRule(rule.name, newEnabled);
+        setPending(null);
+        if (err) {
+            setRules(prev => prev.map(r => (r.name === rule.name ? {...r, enabled: !newEnabled} : r)));
+            setErrors(prev => ({...prev, [rule.name]: err}));
+            return;
+        }
+        loadRules();
+    };
+
+    return (
+        <div className="chaos">
+            <div className="chaos-title">CHAOS RULES</div>
+            <div className="chaos-disclaimer">
+                Toggling rules here is temporary — changes apply immediately to live traffic but are not saved to your
+                config file. Editing chaos.yaml directly will override any toggles made here.
+            </div>
+            <div className="chaos-list">
+                {rules.length === 0 && (
+                    <div className="chaos-empty">
+                        No rules loaded. Add rules to your chaos.yaml and they'll appear here.
+                    </div>
+                )}
+                {rules.map(r => {
+                    const disabled = pending !== null;
+                    const err = errors[r.name];
+                    const tags = chaosTags(r);
+                    return (
+                        <div className="chaos-row" key={r.name}>
+                            <div className="chaos-row-info">
+                                <div className="chaos-row-name">{r.name}</div>
+                                <div className="chaos-row-meta">
+                                    <span>{chaosPathLabel(r)}</span>
+                                    <span>Methods: {chaosMethodsLabel(r)}</span>
+                                    <span>Error Rate: {chaosErrorRateLabel(r)}</span>
+                                </div>
+                                {tags.length > 0 && (
+                                    <div className="chaos-row-tags">
+                                        {tags.map(t => (
+                                            <span className="chaos-tag" key={t}>{t}</span>
+                                        ))}
+                                    </div>
+                                )}
+                                {err && <div className="chaos-row-error">{err}</div>}
+                            </div>
+                            <label className={`chaos-switch${disabled ? ' chaos-switch--pending' : ''}`}>
+                                <input
+                                    type="checkbox"
+                                    checked={r.enabled}
+                                    onChange={e => toggle(r, e.target.checked)}
+                                    disabled={disabled}
+                                    aria-label={`toggle rule ${r.name}`}
+                                />
+                                <span className="chaos-switch-slider" />
+                            </label>
+                        </div>
+                    );
+                })}
+            </div>
         </div>
     );
 }
@@ -331,10 +441,7 @@ function App() {
                 )}
 
                 {view === 'chaos' && (
-                    <div className="placeholder">
-                        <h2>CHAOS ENGINE</h2>
-                        <p>Coming soon — rule management and chaos configuration will live here.</p>
-                    </div>
+                    <ChaosEngine />
                 )}
 
                 {view === 'settings' && (
