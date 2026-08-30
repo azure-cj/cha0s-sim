@@ -14,7 +14,7 @@ import (
 // fields like SourceFile, LineNumber, or StackTrace — those would require a
 // language-specific runtime agent (IAST), which is explicitly out of scope.
 type Finding struct {
-	FindingCategory string // "missing_header" for now; "leaked_secret" added by a future task
+	FindingCategory string // "missing_header" / "weak_header" (HeaderValidator), "leaked_secret" (SecretScanner)
 	Detail          string
 	FindingSeverity string // "info", "warning", or "critical"
 	Location        string // e.g. "header:Content-Security-Policy"

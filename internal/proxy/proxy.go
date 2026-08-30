@@ -47,7 +47,7 @@ func NewServerInstance(port int, target *url.URL, preserveHost bool, insecureSki
 		sink = sinks[0]
 	}
 
-	scanners := []security.ResponseScanner{security.NewDefaultHeaderValidator()}
+	scanners := []security.ResponseScanner{security.NewDefaultHeaderValidator(), security.NewSecretScanner()}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		if err := RunResponseInjectors(resp); err != nil {
 			return err
