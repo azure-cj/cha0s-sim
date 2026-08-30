@@ -23,10 +23,13 @@ const (
 
 // App struct
 type App struct {
-	ctx      context.Context
-	proxySrv *http.Server
-	store    *config.Store
-	running  bool
+	ctx        context.Context
+	proxySrv   *http.Server
+	store      *config.Store
+	running    bool
+	targetURL  string
+	proxyPort  int
+	configPath string
 }
 
 // NewApp creates a new App application struct
@@ -56,13 +59,18 @@ func (s trafficEventSink) Emit(evt platform.Reportable) {
 }
 
 // startup is called when the app starts. The context is saved
-// so we can call the runtime methods.
+// so we can call the runtime methods. Mutable settings are initialized from
+// the defaults before the config store is attempted.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
-	store, err := config.NewStore(defaultConfigPath)
+	a.targetURL = defaultTargetURL
+	a.proxyPort = defaultProxyPort
+	a.configPath = defaultConfigPath
+
+	store, err := config.NewStore(a.configPath)
 	if err != nil {
-		fmt.Printf("app: failed to load config %q (leaving store nil): %v\n", defaultConfigPath, err)
+		fmt.Printf("app: failed to load config %q (leaving store nil): %v\n", a.configPath, err)
 		return
 	}
 	a.store = store
@@ -88,7 +96,62 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 }
 
-// StartProxy starts the chaos proxy using the default target/port/config.
+// SettingsView is the frontend contract for the configurable proxy settings.
+type SettingsView struct {
+	TargetURL  string `json:"targetURL"`
+	ProxyPort  int    `json:"proxyPort"`
+	ConfigPath string `json:"configPath"`
+	FirstRun   bool   `json:"firstRun"` // true if no valid config store is loaded
+}
+
+// GetSettings returns the currently configured proxy settings.
+func (a *App) GetSettings() SettingsView {
+	return SettingsView{
+		TargetURL:  a.targetURL,
+		ProxyPort:  a.proxyPort,
+		ConfigPath: a.configPath,
+		FirstRun:   a.store == nil,
+	}
+}
+
+// SaveSettings validates and applies new proxy settings. Returns a non-empty
+// error message on failure, empty string on success (same contract as
+// StartProxy/StopProxy). All validation happens before any state changes so a
+// bad input never partially applies.
+func (a *App) SaveSettings(targetURL string, proxyPort int, configPath string) string {
+	if a.running {
+		return "cannot change settings while proxy is running — stop it first"
+	}
+
+	if _, err := config.ValidateTargetURL(targetURL); err != nil {
+		return fmt.Sprintf("invalid target URL: %v", err)
+	}
+
+	if proxyPort < 1 || proxyPort > 65535 {
+		return "invalid port: must be between 1 and 65535"
+	}
+
+	// A non-existent configPath is acceptable: the store stays nil (FirstRun
+	// remains true), mirroring how startup handles a missing chaos.yaml.
+	if a.store != nil {
+		if err := a.store.Close(); err != nil {
+			fmt.Printf("app: config store close error during SaveSettings: %v\n", err)
+		}
+		a.store = nil
+	}
+
+	a.targetURL = targetURL
+	a.proxyPort = proxyPort
+	a.configPath = configPath
+
+	if store, err := config.NewStore(a.configPath); err == nil {
+		a.store = store
+	}
+
+	return ""
+}
+
+// StartProxy starts the chaos proxy using the configured target/port/config.
 // Returns an error message string (empty string means success) rather than
 // a Go error type, since Wails' JS bindings handle string returns more
 // predictably across all frontend frameworks for this kind of status reporting.
@@ -97,12 +160,12 @@ func (a *App) StartProxy() string {
 		return "proxy is already running"
 	}
 
-	target, err := url.Parse(defaultTargetURL)
+	target, err := url.Parse(a.targetURL)
 	if err != nil {
-		return fmt.Sprintf("failed to parse target URL %q: %v", defaultTargetURL, err)
+		return fmt.Sprintf("failed to parse target URL %q: %v", a.targetURL, err)
 	}
 
-	srv := proxy.NewServerInstance(defaultProxyPort, target, false, false, false, a.store, trafficEventSink{ctx: a.ctx})
+	srv := proxy.NewServerInstance(a.proxyPort, target, false, false, false, a.store, trafficEventSink{ctx: a.ctx})
 	a.proxySrv = srv
 
 	go func() {
@@ -135,7 +198,7 @@ func (a *App) StopProxy() string {
 // GetStatus returns a simple status string for the frontend to display.
 func (a *App) GetStatus() string {
 	if a.running {
-		return fmt.Sprintf("Running on :%d -> %s", defaultProxyPort, defaultTargetURL)
+		return fmt.Sprintf("Running on :%d -> %s", a.proxyPort, a.targetURL)
 	}
 	return "Stopped"
 }

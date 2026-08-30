@@ -6,8 +6,16 @@ export function GetRuleCount() {
   return window['go']['main']['App']['GetRuleCount']();
 }
 
+export function GetSettings() {
+  return window['go']['main']['App']['GetSettings']();
+}
+
 export function GetStatus() {
   return window['go']['main']['App']['GetStatus']();
+}
+
+export function SaveSettings(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SaveSettings'](arg1, arg2, arg3);
 }
 
 export function StartProxy() {

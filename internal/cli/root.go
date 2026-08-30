@@ -29,12 +29,9 @@ var rootCmd = &cobra.Command{
 		adminPort, _ := cmd.Flags().GetInt("admin-port")
 		noAdmin, _ := cmd.Flags().GetBool("no-admin")
 
-		u, err := url.ParseRequestURI(target)
+		u, err := config.ValidateTargetURL(target)
 		if err != nil {
 			return fmt.Errorf("invalid --target: %w", err)
-		}
-		if u.Scheme != "http" && u.Scheme != "https" {
-			return fmt.Errorf("invalid --target: scheme must be http:// or https://, got: %s", u.Scheme)
 		}
 
 		if insecureSkipVerify {
