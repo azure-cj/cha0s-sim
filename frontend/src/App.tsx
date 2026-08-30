@@ -219,7 +219,9 @@ function SettingsForm({running}: {running: boolean}) {
 function ChaosEngine() {
     const [rules, setRules] = useState<main.RuleView[]>([]);
     const [errors, setErrors] = useState<Record<string, string>>({});
+    const [warnings, setWarnings] = useState<Record<string, string>>({});
     const [pending, setPending] = useState<string | null>(null);
+    const warningTimers = useRef<Record<string, number>>({});
 
     const loadRules = useCallback(() => {
         GetRules().then(setRules);
@@ -227,7 +229,25 @@ function ChaosEngine() {
 
     useEffect(() => {
         loadRules();
+        return () => {
+            Object.values(warningTimers.current).forEach(id => window.clearTimeout(id));
+            warningTimers.current = {};
+        };
     }, [loadRules]);
+
+    const setRuleWarning = (name: string, text: string) => {
+        setWarnings(prev => ({...prev, [name]: text}));
+        if (warningTimers.current[name]) window.clearTimeout(warningTimers.current[name]);
+        warningTimers.current[name] = window.setTimeout(() => {
+            setWarnings(prev => {
+                if (!prev[name]) return prev;
+                const next = {...prev};
+                delete next[name];
+                return next;
+            });
+            delete warningTimers.current[name];
+        }, 3500);
+    };
 
     const toggle = async (rule: main.RuleView, newEnabled: boolean) => {
         if (pending !== null) return;
@@ -238,15 +258,33 @@ function ChaosEngine() {
             delete next[rule.name];
             return next;
         });
+        setWarnings(prev => {
+            if (!prev[rule.name]) return prev;
+            const next = {...prev};
+            delete next[rule.name];
+            return next;
+        });
         setRules(prev => prev.map(r => (r.name === rule.name ? {...r, enabled: newEnabled} : r)));
-        const err = await ToggleRule(rule.name, newEnabled);
+
+        const result = await ToggleRule(rule.name, newEnabled);
         setPending(null);
-        if (err) {
-            setRules(prev => prev.map(r => (r.name === rule.name ? {...r, enabled: !newEnabled} : r)));
-            setErrors(prev => ({...prev, [rule.name]: err}));
+
+        if (result === '') {
+            loadRules();
             return;
         }
-        loadRules();
+        if (result.startsWith('warning:')) {
+            // Toggled in-memory but could not be persisted to disk: keep the
+            // flipped state (the toggle DID take effect for live traffic) and
+            // show a soft amber warning that fades after a few seconds.
+            setRuleWarning(rule.name, result);
+            loadRules();
+            return;
+        }
+        // Hard failure (rule not found, no config): revert the optimistic flip
+        // and show a persistent red error near this rule.
+        setRules(prev => prev.map(r => (r.name === rule.name ? {...r, enabled: !newEnabled} : r)));
+        setErrors(prev => ({...prev, [rule.name]: result}));
     };
 
     return (
@@ -265,6 +303,7 @@ function ChaosEngine() {
                 {rules.map(r => {
                     const disabled = pending !== null;
                     const err = errors[r.name];
+                    const warn = warnings[r.name];
                     const tags = chaosTags(r);
                     return (
                         <div className="chaos-row" key={r.name}>
@@ -283,6 +322,7 @@ function ChaosEngine() {
                                     </div>
                                 )}
                                 {err && <div className="chaos-row-error">{err}</div>}
+                                {warn && <div className="chaos-row-warning">{warn}</div>}
                             </div>
                             <label className={`chaos-switch${disabled ? ' chaos-switch--pending' : ''}`}>
                                 <input
