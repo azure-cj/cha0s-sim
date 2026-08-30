@@ -103,27 +103,82 @@ function summarizeTraffic(evt: TrafficEventPayload): string {
     return `${base} [${effects}]`;
 }
 
-function chaosPathLabel(r: main.RuleView): string {
-    if (r.pathRegex) return `regex: ${r.pathRegex}`;
-    return r.path || 'ANY';
+// Plain-language phrasing helpers for the Chaos Engine view. These translate
+// rule config (path/regex/methods/error_rate) into sentences a non-technical
+// user can parse at a glance; the raw technical details stay visible as
+// smaller, muted secondary text so power users retain the exact values.
+
+// chaosMethodsPhrase folds the restricted methods into a natural reading
+// ("GET and POST", "GET, POST, and PUT"); null means "all request types".
+function chaosMethodsPhrase(methods?: string[]): string | null {
+    if (!methods || methods.length === 0) return null;
+    if (methods.length === 1) return methods[0];
+    if (methods.length === 2) return `${methods[0]} and ${methods[1]}`;
+    return `${methods.slice(0, -1).join(', ')}, and ${methods[methods.length - 1]}`;
 }
 
-function chaosMethodsLabel(r: main.RuleView): string {
-    if (!r.methods || r.methods.length === 0) return 'ALL';
-    return r.methods.join(', ');
+// chaosSummary is the lead sentence for a rule. It carries the plain-language
+// "what does this rule target" in prominent position; the raw regex stays
+// visible but de-emphasized (matched against .chaos-muted).
+function chaosSummary(r: main.RuleView) {
+    const methods = chaosMethodsPhrase(r.methods);
+    if (r.pathRegex) {
+        // Regex rules keep the lead sentence method-less (per spec template);
+        // the raw method list is a muted secondary detail below.
+        return (
+            <>
+                Affects requests matching a pattern{' '}
+                <span className="chaos-muted">(regex: {r.pathRegex})</span>
+            </>
+        );
+    }
+    const path = r.path && r.path.length > 0 ? r.path : 'any endpoint';
+    if (methods) return <>Affects {methods} requests to {path}</>;
+    return <>Affects requests to {path}</>;
+}
+
+// chaosFrequencyText renders error_rate as a friendly frequency instead of a
+// bare percentage. Exact clean fractions become "1 in N"; values that don't
+// round cleanly fall back to a friendly "~X% of the time". error_rate 0 means
+// the rule's effects NEVER fire (matcher.ShouldFire gates on it) and 1.0 means
+// always, so both get a plain word rather than a fraction.
+function chaosFrequencyText(errorRate: number): string {
+    if (errorRate <= 0) return 'Never triggers';
+    if (errorRate >= 1) return 'Triggers every time';
+    const n = Math.round(1 / errorRate);
+    if (n <= 1) return 'Triggers every time';
+    // Accept "1 in N" only when the rounded fraction is within ~5% of the
+    // configured rate; otherwise use a friendly percentage.
+    if (Math.abs(1 / n - errorRate) / errorRate <= 0.05) {
+        return `Triggers on about 1 in ${n} requests`;
+    }
+    return `Triggers about ${Math.round(errorRate * 100)}% of the time`;
 }
 
 function chaosErrorRateLabel(r: main.RuleView): string {
     return `${Math.round((r.errorRate || 0) * 100)}%`;
 }
 
-function chaosTags(r: main.RuleView): string[] {
-    const tags: string[] = [];
-    if (r.hasLatency) tags.push('Latency');
-    if (r.hasStatusOverride) tags.push('Status Override');
-    if (r.hasDropConnection) tags.push('Drop');
-    if (r.hasMangle) tags.push('Mangle');
-    if (r.hasFuzz) tags.push('Fuzz');
+// chaosMethodsDetail is the raw "Methods: GET, POST" secondary text (or a plain
+// "Applies to all request types" when unrestricted).
+function chaosMethodsDetail(r: main.RuleView): string {
+    if (!r.methods || r.methods.length === 0) return 'Applies to all request types';
+    return `Methods: ${r.methods.join(', ')}`;
+}
+
+interface ChaosTag {
+    kind: string;
+    label: string; // emoji + short plain-language label shown in the pill
+    title: string; // HTML title tooltip with a one-line plain-language description
+}
+
+function chaosTags(r: main.RuleView): ChaosTag[] {
+    const tags: ChaosTag[] = [];
+    if (r.hasLatency) tags.push({kind: 'latency', label: '🐢 Slows it down', title: 'Delays the response to simulate a slow network'});
+    if (r.hasStatusOverride) tags.push({kind: 'status', label: '⚠️ Fakes an error', title: 'Returns a fake error status like 500 or 503'});
+    if (r.hasDropConnection) tags.push({kind: 'drop', label: '🔌 Cuts the connection', title: 'Simulates the connection suddenly dropping, like lost WiFi'});
+    if (r.hasMangle) tags.push({kind: 'mangle', label: '🧬 Corrupts the data', title: 'Deletes or corrupts fields in the response'});
+    if (r.hasFuzz) tags.push({kind: 'fuzz', label: '🎯 Injects bad input', title: 'Sends malicious test payloads like SQL injection or XSS strings'});
     return tags;
 }
 
@@ -310,12 +365,19 @@ function ChaosEngine() {
         setErrors(prev => ({...prev, [rule.name]: result}));
     };
 
+    const activeCount = rules.filter(r => r.enabled).length;
+    const ruleWord = rules.length === 1 ? 'rule' : 'rules';
+    const activeWord = activeCount === 1 ? 'is' : 'are';
+
     return (
         <div className="chaos">
             <div className="chaos-title">CHAOS RULES</div>
+            <div className="chaos-summary">
+                You have {rules.length} {ruleWord} configured. {activeCount} {activeWord} currently active.
+            </div>
             <div className="chaos-disclaimer">
-                Toggling rules here is temporary — changes apply immediately to live traffic but are not saved to your
-                config file. Editing chaos.yaml directly will override any toggles made here.
+                Turning a rule on/off here works right away, but won't be remembered if you edit your config file
+                directly.
             </div>
             <div className="chaos-list">
                 {rules.length === 0 && (
@@ -332,15 +394,18 @@ function ChaosEngine() {
                         <div className="chaos-row" key={r.name}>
                             <div className="chaos-row-info">
                                 <div className="chaos-row-name">{r.name}</div>
+                                <div className="chaos-row-summary">{chaosSummary(r)}</div>
+                                <div className="chaos-row-frequency">{chaosFrequencyText(r.errorRate || 0)}</div>
                                 <div className="chaos-row-meta">
-                                    <span>{chaosPathLabel(r)}</span>
-                                    <span>Methods: {chaosMethodsLabel(r)}</span>
-                                    <span>Error Rate: {chaosErrorRateLabel(r)}</span>
+                                    {(!r.pathRegex && r.methods && r.methods.length > 0) ? null : (
+                                        <span>{chaosMethodsDetail(r)}</span>
+                                    )}
+                                    <span>Error rate: {chaosErrorRateLabel(r)}</span>
                                 </div>
                                 {tags.length > 0 && (
                                     <div className="chaos-row-tags">
                                         {tags.map(t => (
-                                            <span className="chaos-tag" key={t}>{t}</span>
+                                            <span className="chaos-tag" key={t.kind} title={t.title}>{t.label}</span>
                                         ))}
                                     </div>
                                 )}

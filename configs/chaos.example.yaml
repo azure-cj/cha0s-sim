@@ -40,6 +40,7 @@ rules:
     status_override:
       code: 503
       strip_body: true
+    error_rate: 1.0
 
   # Rule 3: mangle responses targeting a known field.
   # Matches the user profile endpoint and enables the "delete_keys" strategy for
@@ -56,6 +57,7 @@ rules:
       target_keys:
         - address
         - ssn
+    error_rate: 1.0
 
   # Rule 4: disabled by default - keep this rule here as a documentation example.
   # Disabled rules are parsed and validated but never applied.

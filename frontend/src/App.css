@@ -438,6 +438,17 @@
     margin-bottom: 10px;
 }
 
+.chaos-summary {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text-primary);
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+}
+
 .chaos-disclaimer {
     font-family: var(--mono);
     font-size: 12px;
@@ -484,14 +495,34 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: 6px;
 }
 
 .chaos-row-name {
     font-family: var(--mono);
-    font-size: 13px;
+    font-size: 11px;
     font-weight: 700;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.chaos-row-summary {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--text-primary);
+}
+
+.chaos-muted {
+    color: var(--text-dim);
+    font-weight: 400;
+}
+
+.chaos-row-frequency {
+    font-family: var(--mono);
+    font-size: 12px;
     color: var(--text-primary);
 }
 
@@ -500,7 +531,7 @@
     flex-wrap: wrap;
     gap: 4px 14px;
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: 11px;
     color: var(--text-dim);
 }
 
@@ -512,7 +543,7 @@
 
 .chaos-tag {
     font-family: var(--mono);
-    font-size: 10px;
+    font-size: 11px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--accent-cyan);
@@ -520,6 +551,7 @@
     border: 1px solid rgba(34, 211, 238, 0.35);
     border-radius: 999px;
     padding: 2px 9px;
+    cursor: help;
 }
 
 .chaos-row-error {
