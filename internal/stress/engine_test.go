@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -144,5 +145,89 @@ func TestEngineRunWithShapeFiresRequests(t *testing.T) {
 	t.Logf("shaped engine run: %d requests in %v (avg %.1f RPS)", snap.TotalRequests, elapsed, snap.RPS)
 	if snap.RPS <= 0 {
 		t.Errorf("RPS = %v, want > 0", snap.RPS)
+	}
+}
+
+func TestEngineRunReportsProgress(t *testing.T) {
+	srv := newFakeTarget(t, 0)
+
+	var mu sync.Mutex
+	var progress []MetricsSnapshot
+
+	e := NewEngine(Config{
+		TargetURL:      srv.URL,
+		TargetRPS:      30,
+		Duration:       1200 * time.Millisecond, // 500ms ticker -> ~2 ticks
+		Concurrency:    5,
+		RequestTimeout: 2 * time.Second,
+		OnProgress: func(s MetricsSnapshot) {
+			// Called from the engine's own goroutine; the test must not touch
+			// the slice unsynchronized.
+			mu.Lock()
+			progress = append(progress, s)
+			mu.Unlock()
+		},
+	}, NewClientPool(64))
+
+	final := e.Run(context.Background())
+
+	mu.Lock()
+	n := len(progress)
+	last := MetricsSnapshot{}
+	if n > 0 {
+		last = progress[n-1]
+	}
+	mu.Unlock()
+
+	if n < 2 {
+		t.Errorf("OnProgress fired %d times over a 1.2s run (500ms ticker), want >= 2", n)
+	}
+	if final.TotalRequests == 0 {
+		t.Error("run fired no requests; progress/result meaningless")
+	}
+	for i, s := range progress {
+		if s.TotalRequests < 0 || s.RPS < 0 {
+			t.Errorf("progress[%d] has negative values: %+v", i, s)
+		}
+	}
+	if n > 0 && last.TotalRequests > final.TotalRequests {
+		t.Errorf("last progress snapshot shows %d requests but final shows %d: snapshots must reflect cumulative state", last.TotalRequests, final.TotalRequests)
+	}
+}
+
+func TestEngineRunCancelsPromptly(t *testing.T) {
+	srv := newFakeTarget(t, 0)
+
+	e := NewEngine(Config{
+		TargetURL:      srv.URL,
+		TargetRPS:      20,
+		Duration:       10 * time.Second,
+		Concurrency:    5,
+		RequestTimeout: 2 * time.Second,
+	}, NewClientPool(64))
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// final is written by the goroutine BEFORE done is closed (defer runs after
+	// the assignment), so reading it after <-done has a happens-before edge.
+	done := make(chan struct{})
+	var final MetricsSnapshot
+	go func() {
+		defer close(done)
+		final = e.Run(ctx)
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// returned promptly — good
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run did not return within 1s of context cancellation (10s duration should be short-circuited)")
+	}
+
+	if final.TotalRequests == 0 {
+		t.Errorf("Run returned %d requests after cancellation; want > 0 (requests must have fired before the cancel)", final.TotalRequests)
 	}
 }

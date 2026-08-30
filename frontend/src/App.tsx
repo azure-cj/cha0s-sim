@@ -1,6 +1,18 @@
-import {useCallback, useEffect, useRef, useState} from 'react';
+import {ChangeEvent, useCallback, useEffect, useRef, useState} from 'react';
 import {EventsOn} from "../wailsjs/runtime/runtime";
-import {GetRules, GetRuleCount, GetSettings, GetStatus, SaveSettings, StartProxy, StopProxy, ToggleRule} from "../wailsjs/go/main/App";
+import {
+    GetRules,
+    GetRuleCount,
+    GetSettings,
+    GetStatus,
+    GetStressStatus,
+    SaveSettings,
+    StartProxy,
+    StartStressTest,
+    StopProxy,
+    StopStressTest,
+    ToggleRule,
+} from "../wailsjs/go/main/App";
 import {main} from '../wailsjs/go/models';
 import bootBackground from './assets/images/boot-background.jpg';
 import './App.css';
@@ -24,6 +36,17 @@ interface FindingPayload {
     Location: string;
 }
 
+interface StressUpdatePayload {
+    totalRequests: number;
+    totalErrors: number;
+    errorRate: number;
+    rps: number;
+    p50Ms: number;
+    p95Ms: number;
+    p99Ms: number;
+    final: boolean;
+}
+
 interface LogEntry {
     id: number;
     time: string;
@@ -31,7 +54,7 @@ interface LogEntry {
     summary: string;
 }
 
-type View = 'dashboard' | 'chaos' | 'settings';
+type View = 'dashboard' | 'chaos' | 'stress' | 'settings';
 
 const BOOT_WORDMARK = 'cha0s;sim';
 
@@ -342,6 +365,377 @@ function ChaosEngine() {
     );
 }
 
+// ---------- stress test ----------
+
+type StressPhase = 'pick' | 'running' | 'finished';
+type PresetId = 'light' | 'viral' | 'stressbreak';
+type StressTone = 'good' | 'warn' | 'bad';
+
+interface HistoryPoint {
+    label: string;
+    rps: number;
+    errorRate: number;
+}
+
+function stressTone(errorRate: number): StressTone {
+    if (errorRate >= 0.5) return 'bad';
+    if (errorRate >= 0.1) return 'warn';
+    return 'good';
+}
+
+interface PresetDef {
+    id: PresetId;
+    icon: string;
+    name: string;
+    desc: string;
+}
+
+function StressTest() {
+    const [phase, setPhase] = useState<StressPhase>('pick');
+    const [latest, setLatest] = useState<StressUpdatePayload | null>(null);
+    const [history, setHistory] = useState<HistoryPoint[]>([]);
+    const [launchError, setLaunchError] = useState('');
+
+    // Default target for presets AND the Custom form comes from settings.
+    const [settingsTarget, setSettingsTarget] = useState('http://localhost:3000');
+    const [form, setForm] = useState({
+        targetURL: '',
+        targetRPS: '50',
+        durationSec: '30',
+        concurrency: '10',
+        shape: '',
+        endRPS: '',
+        spikeRPS: '',
+    });
+
+    // Which preset started the current run (null = Custom). Only 'stressbreak'
+    // enables the frontend auto-stop rule, so a bad error rate never aborts the
+    // other presets. Refs keep the event handler stable (no resubscribes).
+    const presetRef = useRef<PresetId | null>(null);
+    const autoStoppedRef = useRef(false);
+
+    const handleUpdate = useCallback((u: StressUpdatePayload) => {
+        setLatest(u);
+        setHistory(prev => {
+            const next = [...prev, {label: new Date().toLocaleTimeString(), rps: u.rps, errorRate: u.errorRate}];
+            return next.length > 30 ? next.slice(next.length - 30) : next;
+        });
+        if (u.final) {
+            setPhase('finished');
+            return;
+        }
+        // Stress & Break: the backend has no conditional auto-stop, so the
+        // frontend watches the live errorRate and reuses the real ABORT path
+        // (StopStressTest) once 50% errors is crossed. Guarded so the abort is
+        // issued exactly once per run.
+        if (presetRef.current === 'stressbreak' && !autoStoppedRef.current && u.errorRate >= 0.5) {
+            autoStoppedRef.current = true;
+            StopStressTest();
+        }
+    }, []);
+
+    // Subscribe only while the Running/Results view is active; unsub on leave.
+    useEffect(() => {
+        if (phase !== 'running') return;
+        const off = EventsOn('stress_update', (data: any) => handleUpdate(data as StressUpdatePayload));
+        return off;
+    }, [phase, handleUpdate]);
+
+    // Seed defaults. Also cover the case of navigating here while a test from a
+    // previous visit is still running: jump straight into the Running view and
+    // resume live updates.
+    useEffect(() => {
+        GetSettings().then(s => {
+            setSettingsTarget(s.targetURL);
+            setForm(prev => ({...prev, targetURL: s.targetURL}));
+        });
+        GetStressStatus().then(runningNow => {
+            if (runningNow) {
+                presetRef.current = null;
+                setPhase('running');
+            }
+        });
+    }, []);
+
+    const launch = async (preset: PresetId | null, cfg: main.StressConfig) => {
+        setLaunchError('');
+        const err = await StartStressTest(cfg);
+        if (err !== '') {
+            setLaunchError(err);
+            return;
+        }
+        presetRef.current = preset;
+        autoStoppedRef.current = false;
+        setLatest(null);
+        setHistory([]);
+        setPhase('running');
+    };
+
+    const launchPreset = (p: PresetId) => {
+        const t = settingsTarget || 'http://localhost:3000';
+        let cfg: main.StressConfig;
+        switch (p) {
+            case 'light':
+                cfg = new main.StressConfig({targetURL: t, targetRPS: 50, durationSec: 30, concurrency: 10, shape: '', endRPS: 0, spikeRPS: 0});
+                break;
+            case 'viral':
+                // Backend hardcodes spikeStart=0 / spikeDuration=5s (not exposed
+                // via StressConfig), so the spike lands in the FIRST 5s of the
+                // 20s run — the subtext below says exactly that.
+                cfg = new main.StressConfig({targetURL: t, targetRPS: 20, durationSec: 20, concurrency: 30, shape: 'spike', endRPS: 0, spikeRPS: 500});
+                break;
+            case 'stressbreak':
+                cfg = new main.StressConfig({targetURL: t, targetRPS: 10, durationSec: 60, concurrency: 50, shape: 'continuous', endRPS: 1000, spikeRPS: 0});
+                break;
+            default:
+                return;
+        }
+        launch(p, cfg);
+    };
+
+    const presets: PresetDef[] = [
+        {id: 'light', icon: '🟢', name: 'Light Load', desc: 'Steady 50 RPS for 30 seconds'},
+        {id: 'viral', icon: '🟡', name: 'Viral Spike', desc: 'Baseline 20 RPS — spikes to 500 RPS immediately for the first 5s of a 20s run, then settles back down'},
+        {id: 'stressbreak', icon: '🔴', name: 'Stress & Break', desc: 'Ramps up traffic until your backend starts struggling — auto-stops at a 50% error rate'},
+    ];
+
+    const num = (s: string) => Number(s);
+    const formValid =
+        form.targetURL.trim() !== '' &&
+        num(form.targetRPS) > 0 &&
+        num(form.durationSec) > 0 &&
+        num(form.concurrency) > 0 &&
+        (form.shape !== 'continuous' || num(form.endRPS) > 0) &&
+        (form.shape !== 'spike' || num(form.spikeRPS) > 0);
+
+    const launchCustom = () => {
+        const cfg = new main.StressConfig({
+            targetURL: form.targetURL.trim(),
+            targetRPS: num(form.targetRPS),
+            durationSec: Math.floor(num(form.durationSec)),
+            concurrency: Math.floor(num(form.concurrency)),
+            shape: form.shape,
+            endRPS: form.shape === 'continuous' ? num(form.endRPS) : 0,
+            spikeRPS: form.shape === 'spike' ? num(form.spikeRPS) : 0,
+        });
+        launch(null, cfg);
+    };
+
+    const setField = (key: keyof typeof form) => (e: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+        setForm(prev => ({...prev, [key]: e.target.value}));
+    };
+
+    if (phase === 'pick') {
+        return (
+            <div className="stress">
+                <div className="stress-title">STRESS TEST — PRESETS</div>
+
+                <div className="stress-presets">
+                    {presets.map(p => (
+                        <button className="stress-preset" key={p.id} onClick={() => launchPreset(p.id)}>
+                            <span className="stress-preset-icon">{p.icon}</span>
+                            <span className="stress-preset-name">{p.name}</span>
+                            <span className="stress-preset-desc">{p.desc}</span>
+                        </button>
+                    ))}
+                </div>
+
+                <div className="stress-custom-heading">CUSTOM CONFIGURATION</div>
+
+                <form
+                    className="settings-form stress-form"
+                    onSubmit={e => {
+                        e.preventDefault();
+                        if (formValid) launchCustom();
+                    }}
+                >
+                    <div className="settings-field">
+                        <label htmlFor="stress-target">Target URL</label>
+                        <input
+                            className="settings-input"
+                            id="stress-target"
+                            type="text"
+                            placeholder="http://localhost:3000"
+                            value={form.targetURL}
+                            onChange={setField('targetURL')}
+                        />
+                    </div>
+
+                    <div className="settings-field-stress-row">
+                        <div className="settings-field">
+                            <label htmlFor="stress-rps">Target RPS</label>
+                            <input
+                                className="settings-input"
+                                id="stress-rps"
+                                type="number"
+                                min={1}
+                                value={form.targetRPS}
+                                onChange={setField('targetRPS')}
+                            />
+                        </div>
+                        <div className="settings-field">
+                            <label htmlFor="stress-duration">Duration (s)</label>
+                            <input
+                                className="settings-input"
+                                id="stress-duration"
+                                type="number"
+                                min={1}
+                                value={form.durationSec}
+                                onChange={setField('durationSec')}
+                            />
+                        </div>
+                        <div className="settings-field">
+                            <label htmlFor="stress-concurrency">Concurrency</label>
+                            <input
+                                className="settings-input"
+                                id="stress-concurrency"
+                                type="number"
+                                min={1}
+                                value={form.concurrency}
+                                onChange={setField('concurrency')}
+                            />
+                        </div>
+                    </div>
+
+                    <div className="settings-field">
+                        <label htmlFor="stress-shape">Shape</label>
+                        <select
+                            className="settings-input"
+                            id="stress-shape"
+                            value={form.shape}
+                            onChange={setField('shape')}
+                        >
+                            <option value="">None (flat)</option>
+                            <option value="continuous">Continuous</option>
+                            <option value="stepped">Stepped</option>
+                            <option value="spike">Spike</option>
+                        </select>
+                    </div>
+
+                    {form.shape === 'continuous' && (
+                        <div className="settings-field">
+                            <label htmlFor="stress-end-rps">End RPS</label>
+                            <input
+                                className="settings-input"
+                                id="stress-end-rps"
+                                type="number"
+                                min={1}
+                                placeholder="1000"
+                                value={form.endRPS}
+                                onChange={setField('endRPS')}
+                            />
+                        </div>
+                    )}
+
+                    {form.shape === 'spike' && (
+                        <div className="settings-field">
+                            <label htmlFor="stress-spike-rps">Spike RPS</label>
+                            <input
+                                className="settings-input"
+                                id="stress-spike-rps"
+                                type="number"
+                                min={1}
+                                placeholder="500"
+                                value={form.spikeRPS}
+                                onChange={setField('spikeRPS')}
+                            />
+                        </div>
+                    )}
+
+                    <div className="settings-actions">
+                        <button className="btn" type="submit" disabled={!formValid}>
+                            Launch
+                        </button>
+                        {launchError && <span className="settings-error">{launchError}</span>}
+                    </div>
+                </form>
+            </div>
+        );
+    }
+
+    // Running or finished — the shared Metrics/Results view.
+    const status = phase === 'running' ? 'RUNNING' : 'FINISHED';
+    const errorRate = latest?.errorRate ?? 0;
+    const tone = stressTone(errorRate);
+    const rpsVal = latest?.rps ?? 0;
+    const maxRps = Math.max(...history.map(h => h.rps), 1);
+    const rpsPct = rpsVal > 0 ? Math.max(3, Math.min(100, (rpsVal / maxRps) * 100)) : 0;
+    const errPct = Math.min(100, errorRate * 100);
+
+    const pctCards = [
+        {label: 'p50', value: latest ? `${latest.p50Ms}ms` : '—', note: 'Half of requests are this fast or faster'},
+        {label: 'p95', value: latest ? `${latest.p95Ms}ms` : '—', note: '95% of requests are this fast or faster'},
+        {label: 'p99', value: latest ? `${latest.p99Ms}ms` : '—', note: '99% of requests are this fast or faster'},
+    ];
+
+    return (
+        <div className="stress">
+            <div className="stress-title">STRESS TEST — {status}</div>
+
+            <div className={`stress-top stress-top--${tone}`}>
+                <div className="stress-metric">
+                    <div className="stress-metric-value">{Math.round(rpsVal)}</div>
+                    <div className="stress-metric-label">RPS</div>
+                </div>
+                <div className="stress-metric">
+                    <div className="stress-metric-value">{Math.round(errorRate * 100)}%</div>
+                    <div className="stress-metric-label">ERROR RATE</div>
+                </div>
+                <span className={`stress-badge${status === 'RUNNING' ? ' stress-badge--running' : ''}`}>
+                    {status === 'RUNNING' ? '● RUNNING' : 'FINISHED'}
+                </span>
+            </div>
+
+            <div className="stress-feed">
+                <div className="stress-feed-row">
+                    <span className="stress-feed-label">RPS</span>
+                    <div className="stress-feed-track">
+                        <div className="stress-feed-bar stress-feed-bar--rps" style={{width: `${rpsPct}%`}} />
+                    </div>
+                    <span className="stress-feed-value">{Math.round(rpsVal)}</span>
+                </div>
+                <div className="stress-feed-row">
+                    <span className="stress-feed-label">ERRORS</span>
+                    <div className="stress-feed-track">
+                        <div className={`stress-feed-bar stress-feed-bar--${tone}`} style={{width: `${errPct}%`}} />
+                    </div>
+                    <span className="stress-feed-value">{Math.round(errorRate * 100)}%</span>
+                </div>
+                <div className="stress-feed-meta">
+                    Live trace — last {history.length} update{history.length === 1 ? '' : 's'} ·{' '}
+                    {latest ? `${latest.totalRequests} requests · ${latest.totalErrors} errors` : 'waiting for data…'}
+                </div>
+            </div>
+
+            <div className="stress-pct">
+                {pctCards.map(c => (
+                    <div className="stress-pct-card" key={c.label}>
+                        <div className="stress-pct-label">{c.label}</div>
+                        <div className="stress-pct-value">{c.value}</div>
+                        <div className="stress-pct-note">{c.note}</div>
+                    </div>
+                ))}
+            </div>
+
+            {status === 'RUNNING' ? (
+                <button className="btn btn--danger stress-abort" onClick={() => StopStressTest()}>
+                    ABORT TEST
+                </button>
+            ) : (
+                <button
+                    className="btn stress-again"
+                    onClick={() => {
+                        setPhase('pick');
+                        setLaunchError('');
+                    }}
+                >
+                    Run Another Test
+                </button>
+            )}
+        </div>
+    );
+}
+
 function App() {
     const [booted, setBooted] = useState(false);
     const [fading, setFading] = useState(false);
@@ -443,6 +837,10 @@ function App() {
                         onClick={() => setView('chaos')}
                     >CHAOS ENGINE</button>
                     <button
+                        className={`nav-item${view === 'stress' ? ' nav-item--active' : ''}`}
+                        onClick={() => setView('stress')}
+                    >STRESS TEST</button>
+                    <button
                         className={`nav-item${view === 'settings' ? ' nav-item--active' : ''}`}
                         onClick={() => {
                             setView('settings');
@@ -482,6 +880,10 @@ function App() {
 
                 {view === 'chaos' && (
                     <ChaosEngine />
+                )}
+
+                {view === 'stress' && (
+                    <StressTest />
                 )}
 
                 {view === 'settings' && (

@@ -26,6 +26,10 @@ type Config struct {
 	// and also exactly what a Soak test is: target.Shape == nil with a long
 	// Duration. No separate Soak constructor exists; that would be redundant.
 	Shape RPSShape
+	// OnProgress, when non-nil, receives a live in-progress MetricsSnapshot on
+	// a 500ms ticker while Run executes. It is a side-channel only — Run still
+	// returns the single final snapshot. nil disables progress reporting.
+	OnProgress func(MetricsSnapshot)
 }
 
 // Engine owns everything a load run needs: the shared client pool, the metrics
@@ -69,7 +73,8 @@ func NewEngine(cfg Config, client *http.Client) *Engine {
 // limit on a 100ms ticker, so the target RPS follows the shape over time. When
 // cfg.Shape is nil the ticker is skipped entirely and the limiter keeps its
 // construction-time rate: the flat-rate path is byte-for-byte the previous
-// behavior.
+// behavior. When cfg.OnProgress is set, another goroutine emits live snapshots
+// on a 500ms ticker; Run's own return value is unaffected.
 func (e *Engine) Run(ctx context.Context) MetricsSnapshot {
 	runCtx, cancel := context.WithTimeout(ctx, e.cfg.Duration)
 	defer cancel()
@@ -81,6 +86,16 @@ func (e *Engine) Run(ctx context.Context) MetricsSnapshot {
 		shapeCtx, stop := context.WithCancel(runCtx)
 		done := make(chan struct{})
 		go e.trackShape(shapeCtx, done, start)
+		defer func() { stop(); <-done }()
+	}
+
+	// progressTicker reports live snapshots; only spawned when OnProgress is
+	// set (nil keeps the previous behavior byte-for-byte, and Snapshot is safe
+	// to call concurrently with Record — it is mutex-guarded in metrics.go).
+	if e.cfg.OnProgress != nil {
+		progressCtx, stop := context.WithCancel(runCtx)
+		done := make(chan struct{})
+		go e.trackProgress(progressCtx, done)
 		defer func() { stop(); <-done }()
 	}
 
@@ -117,6 +132,24 @@ func (e *Engine) trackShape(ctx context.Context, done chan<- struct{}, start tim
 				limit = 0 // SetLimit panics on negative; clamp to a hard stop
 			}
 			e.limiter.SetLimit(rate.Limit(limit))
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// trackProgress reports a live MetricsSnapshot to Config.OnProgress on a 500ms
+// ticker — frequent enough for a smooth dashboard update, cheap enough to run
+// for the lifetime of a Soak. It returns via done once ctx is cancelled. Its
+// lifecycle mirrors trackShape exactly so neither can leak.
+func (e *Engine) trackProgress(ctx context.Context, done chan<- struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			e.cfg.OnProgress(e.metrics.Snapshot())
 		case <-ctx.Done():
 			return
 		}

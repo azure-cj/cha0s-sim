@@ -70,28 +70,12 @@ func runStress(cmd *cobra.Command, args []string) error {
 	}
 
 	shapeLabel := "flat"
-	var shapeFn stress.RPSShape
-	switch shape {
-	case "":
-		// nil Shape: flat rate at --rps for the whole duration. A long duration
-		// here IS a Soak test — no separate shape needed.
-	case "continuous":
-		if !cmd.Flags().Changed("end-rps") {
-			return fmt.Errorf("continuous shape requires --end-rps")
-		}
-		shapeFn = stress.ContinuousRamp(rps, endRPS)
-		shapeLabel = "continuous"
-	case "stepped":
-		shapeFn = stress.SteppedRamp(rps, stepSize, stepDuration)
-		shapeLabel = "stepped"
-	case "spike":
-		if !cmd.Flags().Changed("spike-rps") {
-			return fmt.Errorf("spike shape requires --spike-rps")
-		}
-		shapeFn = stress.Spike(rps, spikeRPS, spikeStart, spikeDuration)
-		shapeLabel = "spike"
-	default:
-		return fmt.Errorf("unknown shape %q: valid values are \"continuous\", \"stepped\", \"spike\" (or \"\" for flat)", shape)
+	shapeFn, err := stress.BuildShape(shape, rps, endRPS, stepSize, stepDuration, spikeRPS, spikeStart, spikeDuration)
+	if err != nil {
+		return err
+	}
+	if shapeFn != nil {
+		shapeLabel = shape
 	}
 	cfg.Shape = shapeFn
 

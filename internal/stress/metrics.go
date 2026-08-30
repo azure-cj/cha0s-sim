@@ -20,15 +20,16 @@ type Metrics struct {
 }
 
 // MetricsSnapshot is a point-in-time read of a Metrics; safe to hand to a
-// dashboard renderer without holding the underlying lock.
+// dashboard renderer without holding the underlying lock. The json tags keep
+// the wire/TypeScript shape camelCase for the Wails frontend.
 type MetricsSnapshot struct {
-	TotalRequests int64
-	TotalErrors   int64
-	ErrorRate     float64 // totalErrors/totalRequests, 0 if totalRequests is 0
-	RPS           float64 // totalRequests / elapsed seconds since startTime
-	P50Ms         int64
-	P95Ms         int64
-	P99Ms         int64
+	TotalRequests int64   `json:"totalRequests"`
+	TotalErrors   int64   `json:"totalErrors"`
+	ErrorRate     float64 `json:"errorRate"` // totalErrors/totalRequests, 0 if totalRequests is 0
+	RPS           float64 `json:"rps"`       // totalRequests / elapsed seconds since startTime
+	P50Ms         int64   `json:"p50Ms"`
+	P95Ms         int64   `json:"p95Ms"`
+	P99Ms         int64   `json:"p99Ms"`
 }
 
 // NewMetrics returns a Metrics with a histogram spanning 1ms to 60s at 3

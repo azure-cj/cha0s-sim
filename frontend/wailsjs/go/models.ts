@@ -50,6 +50,30 @@ export namespace main {
 	        this.firstRun = source["firstRun"];
 	    }
 	}
+	export class StressConfig {
+	    targetURL: string;
+	    targetRPS: number;
+	    durationSec: number;
+	    concurrency: number;
+	    shape: string;
+	    endRPS?: number;
+	    spikeRPS?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new StressConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.targetURL = source["targetURL"];
+	        this.targetRPS = source["targetRPS"];
+	        this.durationSec = source["durationSec"];
+	        this.concurrency = source["concurrency"];
+	        this.shape = source["shape"];
+	        this.endRPS = source["endRPS"];
+	        this.spikeRPS = source["spikeRPS"];
+	    }
+	}
 
 }
 

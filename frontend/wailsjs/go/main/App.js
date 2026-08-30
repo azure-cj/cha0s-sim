@@ -18,6 +18,10 @@ export function GetStatus() {
   return window['go']['main']['App']['GetStatus']();
 }
 
+export function GetStressStatus() {
+  return window['go']['main']['App']['GetStressStatus']();
+}
+
 export function SaveSettings(arg1, arg2, arg3) {
   return window['go']['main']['App']['SaveSettings'](arg1, arg2, arg3);
 }
@@ -26,8 +30,16 @@ export function StartProxy() {
   return window['go']['main']['App']['StartProxy']();
 }
 
+export function StartStressTest(arg1) {
+  return window['go']['main']['App']['StartStressTest'](arg1);
+}
+
 export function StopProxy() {
   return window['go']['main']['App']['StopProxy']();
+}
+
+export function StopStressTest() {
+  return window['go']['main']['App']['StopStressTest']();
 }
 
 export function ToggleRule(arg1, arg2) {

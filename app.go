@@ -13,6 +13,7 @@ import (
 	"cha0s-sim/internal/platform"
 	"cha0s-sim/internal/proxy"
 	"cha0s-sim/internal/security"
+	"cha0s-sim/internal/stress"
 )
 
 const (
@@ -30,6 +31,10 @@ type App struct {
 	targetURL  string
 	proxyPort  int
 	configPath string
+
+	stressEngine   *stress.Engine
+	stressRunning  bool
+	stressCancel   context.CancelFunc // non-nil only while a stress test is running
 }
 
 // NewApp creates a new App application struct
@@ -51,6 +56,8 @@ func (s trafficEventSink) Emit(evt platform.Reportable) {
 		runtime.EventsEmit(s.ctx, "traffic", v)
 	case security.Finding:
 		runtime.EventsEmit(s.ctx, "security_finding", v)
+	case StressUpdate:
+		runtime.EventsEmit(s.ctx, "stress_update", v)
 	default:
 		// Fallback for any future Reportable type: emit generically so nothing
 		// is silently dropped.
@@ -279,4 +286,135 @@ func (a *App) ToggleRule(name string, enabled bool) string {
 		return "warning: toggled in-memory but not persisted to disk — the change is live now but will be lost on hot-reload or restart"
 	}
 	return ""
+}
+
+// StressConfig is the frontend contract for configuring a load test. Kept
+// deliberately smaller than the CLI's full flag set: step/spike timing details
+// and the per-request timeout are not exposed in the UI yet and use hardcoded
+// defaults in StartStressTest.
+type StressConfig struct {
+	TargetURL   string  `json:"targetURL"`
+	TargetRPS   float64 `json:"targetRPS"`
+	DurationSec int     `json:"durationSec"`
+	Concurrency int     `json:"concurrency"`
+	Shape       string  `json:"shape"` // "", "continuous", "stepped", "spike"
+	EndRPS      float64 `json:"endRPS,omitempty"`
+	SpikeRPS    float64 `json:"spikeRPS,omitempty"`
+}
+
+// StressUpdate is the live progress payload streamed to the frontend while a
+// stress test runs. It implements platform.Reportable so it flows through the
+// same EventSink as traffic events and security findings. Final distinguishes
+// the last emission (the completed test's final snapshot) from the
+// intermediate 500ms progress ticks.
+type StressUpdate struct {
+	stress.MetricsSnapshot
+	Final bool `json:"final"`
+}
+
+func (s StressUpdate) Category() string { return "stress" }
+
+func (s StressUpdate) Summary() string {
+	return fmt.Sprintf("stress rps=%.1f errors=%d/%d p50=%dms final=%v", s.RPS, s.TotalErrors, s.TotalRequests, s.P50Ms, s.Final)
+}
+
+func (s StressUpdate) Severity() string {
+	switch {
+	case s.ErrorRate > 0.5:
+		return "critical"
+	case s.ErrorRate > 0.1:
+		return "warning"
+	default:
+		return "info"
+	}
+}
+
+var _ platform.Reportable = StressUpdate{}
+
+// emitStressUpdate forwards a snapshot to the frontend via the shared
+// trafficEventSink (the same single event-emission path used by proxy traffic
+// and security findings).
+func (a *App) emitStressUpdate(snap stress.MetricsSnapshot, final bool) {
+	trafficEventSink{ctx: a.ctx}.Emit(StressUpdate{MetricsSnapshot: snap, Final: final})
+}
+
+// StartStressTest launches a load test asynchronously and returns immediately.
+// Progress snapshots are streamed to the frontend every 500ms via the
+// "stress_update" event; the run ends by emitting one final StressUpdate with
+// Final=true. Returns a non-empty error message on failure, "" on success.
+func (a *App) StartStressTest(cfg StressConfig) string {
+	if a.stressRunning {
+		return "a stress test is already running"
+	}
+
+	target, err := config.ValidateTargetURL(cfg.TargetURL)
+	if err != nil {
+		return fmt.Sprintf("invalid target URL: %v", err)
+	}
+	if cfg.DurationSec <= 0 {
+		return "invalid duration: must be a positive number of seconds"
+	}
+	if cfg.Concurrency <= 0 {
+		return "invalid concurrency: must be a positive number of workers"
+	}
+	if cfg.TargetRPS <= 0 {
+		return "invalid target RPS: must be positive"
+	}
+
+	shapeFn, err := stress.BuildShape(cfg.Shape, cfg.TargetRPS, cfg.EndRPS, 5, 10*time.Second, cfg.SpikeRPS, 0, 5*time.Second)
+	if err != nil {
+		return err.Error()
+	}
+
+	engineCfg := stress.Config{
+		TargetURL:      target.String(),
+		TargetRPS:      cfg.TargetRPS,
+		Duration:       time.Duration(cfg.DurationSec) * time.Second,
+		Concurrency:    cfg.Concurrency,
+		RequestTimeout: 5 * time.Second,
+		Shape:          shapeFn,
+		OnProgress: func(snap stress.MetricsSnapshot) {
+			a.emitStressUpdate(snap, false)
+		},
+	}
+
+	engine := stress.NewEngine(engineCfg, stress.NewClientPool(1000))
+	a.stressEngine = engine
+
+	// Run under a cancellable context: StopStressTest fires stressCancel to
+	// end the run early. engine.Run derives runCtx from this ctx via
+	// WithTimeout(ctx, Duration), so canceling here short-circuits Duration.
+	ctx, cancel := context.WithCancel(context.Background())
+	a.stressCancel = cancel
+	a.stressRunning = true
+
+	go func() {
+		final := engine.Run(ctx)
+		a.stressRunning = false
+		if a.stressCancel != nil {
+			a.stressCancel = nil // guard: StopStressTest may have already raced nil
+		}
+		a.emitStressUpdate(final, true)
+	}()
+
+	return ""
+}
+
+// StopStressTest requests early termination of the running stress test. It is
+// asynchronous: the stop request is issued here (immediate "" return), and the
+// actual "stopped" state arrives via the next stress_update event with
+// Final=true, exactly like a natural completion — engine.Run returns its final
+// snapshot regardless of WHY the run stopped, so the frontend needs no special
+// case for aborted runs. Returns a non-empty message if nothing is running.
+func (a *App) StopStressTest() string {
+	if !a.stressRunning || a.stressCancel == nil {
+		return "no stress test is running"
+	}
+	a.stressCancel() // safe: invoking a CancelFunc twice is a no-op
+	return ""
+}
+
+// GetStressStatus reports whether a stress test is currently running.
+func (a *App) GetStressStatus() bool {
+	return a.stressRunning
 }
