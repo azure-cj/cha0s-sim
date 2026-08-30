@@ -3,10 +3,12 @@ module cha0s-sim
 go 1.27.0
 
 require (
+	github.com/HdrHistogram/hdrhistogram-go v1.3.0
 	github.com/fatih/color v1.19.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/spf13/cobra v1.10.2
 	github.com/wailsapp/wails/v2 v2.15.0
+	golang.org/x/time v0.15.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
