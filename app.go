@@ -256,15 +256,27 @@ func (a *App) GetRules() []RuleView {
 	return views
 }
 
-// ToggleRule flips a rule's Enabled state in the in-memory config only. Returns
-// a non-empty error message on failure, empty string on success (same contract
-// as StartProxy/StopProxy/SaveSettings).
+// ToggleRule flips a rule's Enabled state in the in-memory config and attempts
+// to persist it to the config file.
+//
+// Return contract (single string, keeping the Wails binding shape simple):
+//   - "" (empty) — full success: toggled AND persisted.
+//   - A message prefixed with "warning:" — the toggle applied in-memory but could
+//     not be persisted to disk (e.g. file deleted/locked). The frontend should
+//     treat this as a soft warning, not a hard failure: the toggle affects live
+//     traffic now but will be lost on hot-reload or restart.
+//   - A plain error message (no prefix) — the toggle failed entirely (e.g. no
+//     config loaded, or no rule with that name).
 func (a *App) ToggleRule(name string, enabled bool) string {
 	if a.store == nil {
 		return "no config loaded — cannot toggle rules"
 	}
-	if err := a.store.SetRuleEnabled(name, enabled); err != nil {
+	persisted, err := a.store.SetRuleEnabled(name, enabled)
+	if err != nil {
 		return err.Error()
+	}
+	if !persisted {
+		return "warning: toggled in-memory but not persisted to disk — the change is live now but will be lost on hot-reload or restart"
 	}
 	return ""
 }
