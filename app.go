@@ -210,3 +210,61 @@ func (a *App) GetRuleCount() int {
 	}
 	return len(a.store.Current().Rules)
 }
+
+// RuleView is the flat frontend contract for a chaos rule. Has* flags signal
+// which chaos types a rule applies without exposing the nested config structs.
+type RuleView struct {
+	Name              string   `json:"name"`
+	Path              string   `json:"path,omitempty"`
+	PathRegex         string   `json:"pathRegex,omitempty"`
+	Methods           []string `json:"methods,omitempty"`
+	ErrorRate         float64  `json:"errorRate"`
+	Enabled           bool     `json:"enabled"`
+	HasLatency        bool     `json:"hasLatency"`
+	HasStatusOverride bool     `json:"hasStatusOverride"`
+	HasDropConnection bool     `json:"hasDropConnection"`
+	HasMangle         bool     `json:"hasMangle"`
+	HasFuzz           bool     `json:"hasFuzz"`
+}
+
+// GetRules returns the currently loaded chaos rules as flat RuleViews.
+// Returns an empty (non-nil) slice when no config is loaded.
+func (a *App) GetRules() []RuleView {
+	if a.store == nil {
+		return []RuleView{}
+	}
+	cfg := a.store.Current()
+	if cfg == nil {
+		return []RuleView{}
+	}
+	views := make([]RuleView, 0, len(cfg.Rules))
+	for _, r := range cfg.Rules {
+		views = append(views, RuleView{
+			Name:              r.Name,
+			Path:              r.Path,
+			PathRegex:         r.PathRegex,
+			Methods:           r.Methods,
+			ErrorRate:         r.ErrorRate,
+			Enabled:           r.Enabled,
+			HasLatency:        r.Latency != nil,
+			HasStatusOverride: r.StatusOverride != nil,
+			HasDropConnection: r.DropConnection,
+			HasMangle:         r.Mangle != nil,
+			HasFuzz:           r.Fuzz != nil,
+		})
+	}
+	return views
+}
+
+// ToggleRule flips a rule's Enabled state in the in-memory config only. Returns
+// a non-empty error message on failure, empty string on success (same contract
+// as StartProxy/StopProxy/SaveSettings).
+func (a *App) ToggleRule(name string, enabled bool) string {
+	if a.store == nil {
+		return "no config loaded — cannot toggle rules"
+	}
+	if err := a.store.SetRuleEnabled(name, enabled); err != nil {
+		return err.Error()
+	}
+	return ""
+}

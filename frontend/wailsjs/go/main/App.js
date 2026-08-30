@@ -6,6 +6,10 @@ export function GetRuleCount() {
   return window['go']['main']['App']['GetRuleCount']();
 }
 
+export function GetRules() {
+  return window['go']['main']['App']['GetRules']();
+}
+
 export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
 }
@@ -24,4 +28,8 @@ export function StartProxy() {
 
 export function StopProxy() {
   return window['go']['main']['App']['StopProxy']();
+}
+
+export function ToggleRule(arg1, arg2) {
+  return window['go']['main']['App']['ToggleRule'](arg1, arg2);
 }

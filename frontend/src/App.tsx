@@ -1,6 +1,7 @@
 import {useEffect, useRef, useState} from 'react';
 import {EventsOn} from "../wailsjs/runtime/runtime";
-import {GetStatus, GetRuleCount, StartProxy, StopProxy} from "../wailsjs/go/main/App";
+import {GetSettings, GetStatus, GetRuleCount, SaveSettings, StartProxy, StopProxy} from "../wailsjs/go/main/App";
+import {main} from '../wailsjs/go/models';
 import bootBackground from './assets/images/boot-background.jpg';
 import './App.css';
 
@@ -77,6 +78,118 @@ function summarizeTraffic(evt: TrafficEventPayload): string {
         return `${e.kind}${detail}`;
     }).join(', ');
     return `${base} [${effects}]`;
+}
+
+function SettingsForm({running}: {running: boolean}) {
+    const [targetURL, setTargetURL] = useState('');
+    const [proxyPort, setProxyPort] = useState('');
+    const [configPath, setConfigPath] = useState('');
+    const [firstRun, setFirstRun] = useState(false);
+    const [error, setError] = useState('');
+    const [success, setSuccess] = useState(false);
+    const successTimer = useRef<number | null>(null);
+
+    const applyFromServer = (s: main.SettingsView) => {
+        setTargetURL(s.targetURL);
+        setProxyPort(String(s.proxyPort));
+        setConfigPath(s.configPath);
+        setFirstRun(s.firstRun);
+    };
+
+    useEffect(() => {
+        let cancelled = false;
+        GetSettings().then(s => {
+            if (!cancelled) applyFromServer(s);
+        });
+        return () => {
+            cancelled = true;
+            if (successTimer.current !== null) window.clearTimeout(successTimer.current);
+        };
+    }, []);
+
+    const save = async () => {
+        setError('');
+        setSuccess(false);
+        const err = await SaveSettings(targetURL, Number(proxyPort), configPath);
+        if (err) {
+            setError(err);
+            return;
+        }
+        setSuccess(true);
+        if (successTimer.current !== null) window.clearTimeout(successTimer.current);
+        successTimer.current = window.setTimeout(() => setSuccess(false), 2500);
+        GetSettings().then(applyFromServer);
+    };
+
+    return (
+        <div className="settings">
+            <div className="settings-title">PROXY SETTINGS</div>
+
+            {firstRun && (
+                <div className="settings-note">
+                    No config file loaded yet — the proxy will run in passthrough mode until a valid chaos.yaml is
+                    set.
+                </div>
+            )}
+
+            {running && (
+                <div className="settings-warn">
+                    Stop the proxy from the Dashboard to change settings.
+                </div>
+            )}
+
+            <form className="settings-form" onSubmit={e => { e.preventDefault(); save(); }}>
+                <div className="settings-field">
+                    <label htmlFor="settings-target">Target URL</label>
+                    <input
+                        className="settings-input"
+                        id="settings-target"
+                        type="text"
+                        placeholder="http://localhost:3000"
+                        value={targetURL}
+                        onChange={e => setTargetURL(e.target.value)}
+                        disabled={running}
+                    />
+                </div>
+
+                <div className="settings-field">
+                    <label htmlFor="settings-port">Proxy Port</label>
+                    <input
+                        className="settings-input"
+                        id="settings-port"
+                        type="number"
+                        min={1}
+                        max={65535}
+                        placeholder="8080"
+                        value={proxyPort}
+                        onChange={e => setProxyPort(e.target.value)}
+                        disabled={running}
+                    />
+                </div>
+
+                <div className="settings-field">
+                    <label htmlFor="settings-config">Config Path</label>
+                    <input
+                        className="settings-input"
+                        id="settings-config"
+                        type="text"
+                        placeholder="chaos.yaml"
+                        value={configPath}
+                        onChange={e => setConfigPath(e.target.value)}
+                        disabled={running}
+                    />
+                </div>
+
+                <div className="settings-actions">
+                    <button className="btn" type="submit" disabled={running}>
+                        Save Settings
+                    </button>
+                    {error && <span className="settings-error">{error}</span>}
+                    {success && <span className="settings-success">Settings saved</span>}
+                </div>
+            </form>
+        </div>
+    );
 }
 
 function App() {
@@ -181,7 +294,10 @@ function App() {
                     >CHAOS ENGINE</button>
                     <button
                         className={`nav-item${view === 'settings' ? ' nav-item--active' : ''}`}
-                        onClick={() => setView('settings')}
+                        onClick={() => {
+                            setView('settings');
+                            refresh();
+                        }}
                     >SETTINGS</button>
                 </nav>
                 <div className="status-badge">
@@ -222,10 +338,7 @@ function App() {
                 )}
 
                 {view === 'settings' && (
-                    <div className="placeholder">
-                        <h2>SETTINGS</h2>
-                        <p>Coming soon — proxy target, port, and config settings will live here.</p>
-                    </div>
+                    <SettingsForm running={running} />
                 )}
             </main>
         </div>

@@ -4,6 +4,8 @@ import {main} from '../models';
 
 export function GetRuleCount():Promise<number>;
 
+export function GetRules():Promise<Array<main.RuleView>>;
+
 export function GetSettings():Promise<main.SettingsView>;
 
 export function GetStatus():Promise<string>;
@@ -13,3 +15,5 @@ export function SaveSettings(arg1:string,arg2:number,arg3:string):Promise<string
 export function StartProxy():Promise<string>;
 
 export function StopProxy():Promise<string>;
+
+export function ToggleRule(arg1:string,arg2:boolean):Promise<string>;

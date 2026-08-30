@@ -207,6 +207,12 @@
     color: #0b1220;
 }
 
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
 .btn--danger {
     border-color: var(--severity-critical);
     color: var(--severity-critical);
@@ -304,4 +310,111 @@
     letter-spacing: 0.16em;
     color: var(--accent-cyan);
     margin-bottom: 4px;
+}
+
+/* ---------- settings ---------- */
+
+.settings {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px 28px;
+}
+
+.settings-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    color: var(--text-dim);
+    margin-bottom: 16px;
+}
+
+.settings-note,
+.settings-warn {
+    font-family: var(--mono);
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 16px;
+    max-width: 480px;
+}
+
+.settings-note {
+    color: var(--text-dim);
+    background: rgba(34, 211, 238, 0.06);
+    border-left: 3px solid var(--accent-cyan);
+}
+
+.settings-warn {
+    color: var(--severity-warning);
+    background: rgba(234, 179, 8, 0.08);
+    border-left: 3px solid var(--severity-warning);
+}
+
+.settings-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-width: 480px;
+}
+
+.settings-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.settings-field label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.settings-input {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text-primary);
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 9px 11px;
+    outline: none;
+    transition: border-color 120ms ease;
+}
+
+.settings-input:focus {
+    border-color: var(--accent-cyan);
+}
+
+.settings-input:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.settings-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 4px;
+}
+
+.settings-error {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--severity-critical);
+}
+
+.settings-success {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: #22c55e;
+    animation: settings-fade 2.5s ease forwards;
+}
+
+@keyframes settings-fade {
+    0%   { opacity: 1; }
+    70%  { opacity: 1; }
+    100% { opacity: 0; }
 }
