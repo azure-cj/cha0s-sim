@@ -1,3 +1,36 @@
+export namespace config {
+	
+	export class CreateRuleRequest {
+	    name: string;
+	    path: string;
+	    methods: string[];
+	    frequency: string;
+	    effect: string;
+	    slowMs?: number;
+	    errorCode?: number;
+	    targetKeys?: string[];
+	    attack?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CreateRuleRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.path = source["path"];
+	        this.methods = source["methods"];
+	        this.frequency = source["frequency"];
+	        this.effect = source["effect"];
+	        this.slowMs = source["slowMs"];
+	        this.errorCode = source["errorCode"];
+	        this.targetKeys = source["targetKeys"];
+	        this.attack = source["attack"];
+	    }
+	}
+
+}
+
 export namespace main {
 	
 	export class RuleView {
@@ -34,7 +67,6 @@ export namespace main {
 	}
 	export class SettingsView {
 	    targetURL: string;
-	    proxyPort: number;
 	    configPath: string;
 	    firstRun: boolean;
 	
@@ -45,7 +77,6 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.targetURL = source["targetURL"];
-	        this.proxyPort = source["proxyPort"];
 	        this.configPath = source["configPath"];
 	        this.firstRun = source["firstRun"];
 	    }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -18,23 +19,75 @@ import (
 
 const (
 	defaultTargetURL  = "http://localhost:3000"
-	defaultProxyPort  = 8080
 	defaultConfigPath = "chaos.yaml"
 )
+
+// ---------------------------------------------------------------------------
+// Multi-session infrastructure
+// ---------------------------------------------------------------------------
+
+type sessionName string
+
+const (
+	sessionChaos    sessionName = "chaos"
+	sessionSecurity sessionName = "security"
+)
+
+// allSessions is the ordered list of every known session type. It drives
+// validation, iteration, and status reporting.
+var allSessions = []sessionName{sessionChaos, sessionSecurity}
+
+// sessionPorts maps each session to its fixed, predictable listen port.
+var sessionPorts = map[sessionName]int{
+	sessionChaos:    8081,
+	sessionSecurity: 8082,
+}
+
+// proxySession holds the per-session server and its running state.
+type proxySession struct {
+	srv     *http.Server
+	running bool
+}
+
+// validateSessionName returns true if name matches a known session.
+func validateSessionName(name string) bool {
+	sn := sessionName(name)
+	for _, s := range allSessions {
+		if s == sn {
+			return true
+		}
+	}
+	return false
+}
+
+// modeForSession returns the pipeline mode each session should run under:
+// chaos runs only chaos rule firing, security runs only scanning.
+func modeForSession(sn sessionName) proxy.PipelineMode {
+	switch sn {
+	case sessionChaos:
+		return proxy.PipelineChaosOnly
+	case sessionSecurity:
+		return proxy.PipelineSecurityOnly
+	default:
+		return proxy.PipelineFull
+	}
+}
+
+// ---------------------------------------------------------------------------
+// App struct
+// ---------------------------------------------------------------------------
 
 // App struct
 type App struct {
 	ctx        context.Context
-	proxySrv   *http.Server
 	store      *config.Store
-	running    bool
+	sessions   map[sessionName]*proxySession
 	targetURL  string
-	proxyPort  int
 	configPath string
 
-	stressEngine   *stress.Engine
-	stressRunning  bool
-	stressCancel   context.CancelFunc // non-nil only while a stress test is running
+	stressEngine  *stress.Engine
+	stressRunning bool
+	stressCancel  context.CancelFunc
 }
 
 // NewApp creates a new App application struct
@@ -70,9 +123,9 @@ func (s trafficEventSink) Emit(evt platform.Reportable) {
 // the defaults before the config store is attempted.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.sessions = make(map[sessionName]*proxySession)
 
 	a.targetURL = defaultTargetURL
-	a.proxyPort = defaultProxyPort
 	a.configPath = defaultConfigPath
 
 	store, err := config.NewStore(a.configPath)
@@ -84,15 +137,18 @@ func (a *App) startup(ctx context.Context) {
 }
 
 // shutdown is called when the app is shutting down. It gracefully stops
-// the proxy (if running) and closes the config store (if loaded).
+// all running sessions and closes the config store (if loaded).
 func (a *App) shutdown(ctx context.Context) {
-	if a.proxySrv != nil {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := a.proxySrv.Shutdown(shutdownCtx); err != nil {
-			fmt.Printf("app: proxy shutdown error: %v\n", err)
+	for name, ps := range a.sessions {
+		if ps.running && ps.srv != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := ps.srv.Shutdown(shutdownCtx); err != nil {
+				fmt.Printf("app: session %q shutdown error: %v\n", name, err)
+			}
+			ps.running = false
+			ps.srv = nil
 		}
-		a.proxySrv = nil
 	}
 
 	if a.store != nil {
@@ -103,10 +159,13 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
 // SettingsView is the frontend contract for the configurable proxy settings.
 type SettingsView struct {
 	TargetURL  string `json:"targetURL"`
-	ProxyPort  int    `json:"proxyPort"`
 	ConfigPath string `json:"configPath"`
 	FirstRun   bool   `json:"firstRun"` // true if no valid config store is loaded
 }
@@ -115,27 +174,17 @@ type SettingsView struct {
 func (a *App) GetSettings() SettingsView {
 	return SettingsView{
 		TargetURL:  a.targetURL,
-		ProxyPort:  a.proxyPort,
 		ConfigPath: a.configPath,
 		FirstRun:   a.store == nil,
 	}
 }
 
 // SaveSettings validates and applies new proxy settings. Returns a non-empty
-// error message on failure, empty string on success (same contract as
-// StartProxy/StopProxy). All validation happens before any state changes so a
-// bad input never partially applies.
-func (a *App) SaveSettings(targetURL string, proxyPort int, configPath string) string {
-	if a.running {
-		return "cannot change settings while proxy is running — stop it first"
-	}
-
+// error message on failure, empty string on success. All validation happens
+// before any state changes so a bad input never partially applies.
+func (a *App) SaveSettings(targetURL string, configPath string) string {
 	if _, err := config.ValidateTargetURL(targetURL); err != nil {
 		return fmt.Sprintf("invalid target URL: %v", err)
-	}
-
-	if proxyPort < 1 || proxyPort > 65535 {
-		return "invalid port: must be between 1 and 65535"
 	}
 
 	// A non-existent configPath is acceptable: the store stays nil (FirstRun
@@ -148,7 +197,6 @@ func (a *App) SaveSettings(targetURL string, proxyPort int, configPath string) s
 	}
 
 	a.targetURL = targetURL
-	a.proxyPort = proxyPort
 	a.configPath = configPath
 
 	if store, err := config.NewStore(a.configPath); err == nil {
@@ -158,13 +206,21 @@ func (a *App) SaveSettings(targetURL string, proxyPort int, configPath string) s
 	return ""
 }
 
-// StartProxy starts the chaos proxy using the configured target/port/config.
-// Returns an error message string (empty string means success) rather than
-// a Go error type, since Wails' JS bindings handle string returns more
-// predictably across all frontend frameworks for this kind of status reporting.
-func (a *App) StartProxy() string {
-	if a.running {
-		return "proxy is already running"
+// ---------------------------------------------------------------------------
+// Session management
+// ---------------------------------------------------------------------------
+
+// StartSession starts a named proxy session (e.g. "chaos", "security").
+// Each session listens on its own fixed port and proxies to the shared target
+// URL. Returns an error message string (empty string means success).
+func (a *App) StartSession(name string) string {
+	if !validateSessionName(name) {
+		return fmt.Sprintf("unknown session %q — valid names: chaos, security", name)
+	}
+
+	sn := sessionName(name)
+	if ps, ok := a.sessions[sn]; ok && ps.running {
+		return fmt.Sprintf("session %q is already running", name)
 	}
 
 	target, err := url.Parse(a.targetURL)
@@ -172,43 +228,73 @@ func (a *App) StartProxy() string {
 		return fmt.Sprintf("failed to parse target URL %q: %v", a.targetURL, err)
 	}
 
-	srv := proxy.NewServerInstance(a.proxyPort, target, false, false, false, a.store, trafficEventSink{ctx: a.ctx})
-	a.proxySrv = srv
+	port := sessionPorts[sn]
+	mode := modeForSession(sn)
+	srv := proxy.NewServerInstance(port, target, false, false, false, a.store, mode, trafficEventSink{ctx: a.ctx})
+
+	ps := &proxySession{srv: srv, running: true}
+	a.sessions[sn] = ps
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Printf("app: proxy ListenAndServe error: %v\n", err)
+			fmt.Printf("app: session %q ListenAndServe error: %v\n", name, err)
 		}
 	}()
 
-	a.running = true
 	return ""
 }
 
-// StopProxy stops the running chaos proxy, if any.
-func (a *App) StopProxy() string {
-	if !a.running || a.proxySrv == nil {
-		return "proxy is not running"
+// StopSession stops a running named session. Returns an error message string
+// (empty string means success).
+func (a *App) StopSession(name string) string {
+	if !validateSessionName(name) {
+		return fmt.Sprintf("unknown session %q — valid names: chaos, security", name)
+	}
+
+	sn := sessionName(name)
+	ps, ok := a.sessions[sn]
+	if !ok || !ps.running || ps.srv == nil {
+		return fmt.Sprintf("session %q is not running", name)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := a.proxySrv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Sprintf("failed to stop proxy: %v", err)
+	if err := ps.srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Sprintf("failed to stop session %q: %v", name, err)
 	}
 
-	a.running = false
-	a.proxySrv = nil
+	ps.running = false
+	ps.srv = nil
 	return ""
 }
 
-// GetStatus returns a simple status string for the frontend to display.
-func (a *App) GetStatus() string {
-	if a.running {
-		return fmt.Sprintf("Running on :%d -> %s", a.proxyPort, a.targetURL)
+// GetSessionStatus reports whether a named session is currently running.
+// Returns false if the session name is unknown or the session is not running.
+func (a *App) GetSessionStatus(name string) bool {
+	if !validateSessionName(name) {
+		return false
 	}
-	return "Stopped"
+	ps, ok := a.sessions[sessionName(name)]
+	if !ok {
+		return false
+	}
+	return ps.running
 }
+
+// GetAllSessionStatuses returns the running state of every known session in a
+// single call. Keys are the session name strings ("chaos", "security").
+func (a *App) GetAllSessionStatuses() map[string]bool {
+	statuses := make(map[string]bool, len(allSessions))
+	for _, name := range allSessions {
+		ps, ok := a.sessions[name]
+		statuses[string(name)] = ok && ps.running
+	}
+	return statuses
+}
+
+// ---------------------------------------------------------------------------
+// Rules
+// ---------------------------------------------------------------------------
 
 // GetRuleCount returns how many chaos rules are currently loaded (0 if no config).
 func (a *App) GetRuleCount() int {
@@ -287,6 +373,55 @@ func (a *App) ToggleRule(name string, enabled bool) string {
 	}
 	return ""
 }
+
+// CreateRule builds a new chaos rule from the create-rule form and adds it to
+// the live config, persisting it to the config file.
+//
+// Return contract (single string, same shape as ToggleRule):
+//   - "" (empty) — full success: the rule is live AND persisted.
+//   - A message prefixed with "warning:" — the rule is live in-memory but could
+//     not be persisted to disk. It affects live traffic now but will be lost on
+//     hot-reload or restart.
+//   - A plain error message (no prefix) — the rule was NOT created (bad input,
+//     invalid config file, duplicate name, etc.); nothing changed.
+//
+// First runs are handled here: if no config store is loaded yet, the app
+// creates one from the configured path on demand — re-opening the existing file
+// when present, or an empty store (no watcher) when the file does not exist yet.
+func (a *App) CreateRule(req config.CreateRuleRequest) string {
+	if a.store == nil {
+		if _, err := os.Stat(a.configPath); err == nil {
+			store, err := config.NewStore(a.configPath)
+			if err != nil {
+				return fmt.Sprintf("failed to load config file %q — fix or remove it before creating a rule: %v", a.configPath, err)
+			}
+			a.store = store
+		} else {
+			store, err := config.NewEmptyStore(a.configPath)
+			if err != nil {
+				return fmt.Sprintf("failed to prepare config file %q: %v", a.configPath, err)
+			}
+			a.store = store
+		}
+	}
+
+	rule, err := config.BuildRuleFromRequest(req)
+	if err != nil {
+		return err.Error()
+	}
+	persisted, err := a.store.AddRule(rule)
+	if err != nil {
+		return err.Error()
+	}
+	if !persisted {
+		return "warning: rule created in-memory but not persisted to disk — it is live now but will be lost on hot-reload or restart"
+	}
+	return ""
+}
+
+// ---------------------------------------------------------------------------
+// Stress testing (unchanged)
+// ---------------------------------------------------------------------------
 
 // StressConfig is the frontend contract for configuring a load test. Kept
 // deliberately smaller than the CLI's full flag set: step/spike timing details
@@ -381,9 +516,6 @@ func (a *App) StartStressTest(cfg StressConfig) string {
 	engine := stress.NewEngine(engineCfg, stress.NewClientPool(1000))
 	a.stressEngine = engine
 
-	// Run under a cancellable context: StopStressTest fires stressCancel to
-	// end the run early. engine.Run derives runCtx from this ctx via
-	// WithTimeout(ctx, Duration), so canceling here short-circuits Duration.
 	ctx, cancel := context.WithCancel(context.Background())
 	a.stressCancel = cancel
 	a.stressRunning = true
@@ -392,7 +524,7 @@ func (a *App) StartStressTest(cfg StressConfig) string {
 		final := engine.Run(ctx)
 		a.stressRunning = false
 		if a.stressCancel != nil {
-			a.stressCancel = nil // guard: StopStressTest may have already raced nil
+			a.stressCancel = nil
 		}
 		a.emitStressUpdate(final, true)
 	}()

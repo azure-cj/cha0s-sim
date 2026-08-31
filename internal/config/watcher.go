@@ -40,11 +40,29 @@ func NewStore(path string) (*Store, error) {
 	return s, nil
 }
 
+// NewEmptyStore creates a Store for a config path that does not exist yet (or
+// is empty), tolerating a missing file — the "first run" scenario the desktop
+// app reaches when no chaos.yaml has ever been written. It holds an empty
+// in-memory config and deliberately starts NO file watcher: there is nothing to
+// watch. After the first rule is persisted, the file is created; live reloads
+// still won't trigger until the app restarts or reloads the store, which is the
+// documented behavior of this constructor.
+func NewEmptyStore(path string) (*Store, error) {
+	s := &Store{
+		path: path,
+	}
+	s.current.Store(&Config{})
+	return s, nil
+}
+
 func (s *Store) Current() *Config {
 	return s.current.Load()
 }
 
 func (s *Store) Close() error {
+	if s.watcher == nil {
+		return nil
+	}
 	return s.watcher.Close()
 }
 

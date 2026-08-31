@@ -55,7 +55,7 @@ var rootCmd = &cobra.Command{
 }
 
 func run(port int, u *url.URL, preserveHost, insecureSkipVerify, verbose bool, adminPort int, runAdmin bool, store *config.Store) error {
-	proxySrv := proxy.NewServerInstance(port, u, preserveHost, insecureSkipVerify, verbose, store)
+	proxySrv := proxy.NewServerInstance(port, u, preserveHost, insecureSkipVerify, verbose, store, proxy.PipelineFull)
 
 	errCh := make(chan error, 2)
 

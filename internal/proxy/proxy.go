@@ -25,9 +25,43 @@ func New(target *url.URL, preserveHost bool, insecureSkipVerify bool, store *con
 	return proxy
 }
 
-// NewServerInstance builds an *http.Server serving the chaos proxy. The final
-// variadic sink argument is optional: when provided, platform events (traffic
-// + security findings) are emitted per request (the desktop app uses this to
+// PipelineMode selects which phase(s) of the chaos+security pipeline a server
+// instance runs for a request.
+type PipelineMode int
+
+const (
+	// PipelineFull runs chaos rule matching/firing AND security scanning,
+	// exactly as the original proxy did. Used by the CLI's plain proxy command
+	// and any caller that wants the entire pipeline.
+	PipelineFull PipelineMode = iota
+	// PipelineChaosOnly runs chaos rule matching/firing (chaos middleware +
+	// response injectors) but performs NO security scanning.
+	PipelineChaosOnly
+	// PipelineSecurityOnly performs security scanning only. ChaosMiddleware is
+	// skipped entirely, so traffic passes through to the backend unmodified
+	// (chaos rules never fire); scanners observe the untouched response.
+	PipelineSecurityOnly
+)
+
+// pipelineScanners returns the scanner set for the given mode. ChaosOnly and
+// SecurityOnly are intentionally built identically (full scanner set for
+// SecurityOnly, empty for ChaosOnly) so the response pipeline below can branch
+// on a single selection.
+func pipelineScanners(mode PipelineMode) []security.ResponseScanner {
+	switch mode {
+	case PipelineSecurityOnly:
+		return []security.ResponseScanner{security.NewDefaultHeaderValidator(), security.NewSecretScanner()}
+	case PipelineChaosOnly:
+		return []security.ResponseScanner{}
+	default: // PipelineFull
+		return []security.ResponseScanner{security.NewDefaultHeaderValidator(), security.NewSecretScanner()}
+	}
+}
+
+// NewServerInstance builds an *http.Server serving the chaos proxy. mode
+// selects which pipeline stages run (see PipelineMode). The final variadic
+// sink argument is optional: when provided, platform events (traffic +
+// security findings) are emitted per request (the desktop app uses this to
 // feed the live traffic view). The headless CLI omits it entirely and behaves
 // exactly as before.
 //
@@ -39,7 +73,7 @@ func New(target *url.URL, preserveHost bool, insecureSkipVerify bool, store *con
 // scanners see the already-mutated response (e.g. a body stripped by an
 // override injector is scanned as empty), matching what the frontend truly
 // receives.
-func NewServerInstance(port int, target *url.URL, preserveHost bool, insecureSkipVerify bool, verbose bool, store *config.Store, sinks ...EventSink) *http.Server {
+func NewServerInstance(port int, target *url.URL, preserveHost bool, insecureSkipVerify bool, verbose bool, store *config.Store, mode PipelineMode, sinks ...EventSink) *http.Server {
 	proxy := New(target, preserveHost, insecureSkipVerify, store)
 
 	var sink EventSink
@@ -47,7 +81,7 @@ func NewServerInstance(port int, target *url.URL, preserveHost bool, insecureSki
 		sink = sinks[0]
 	}
 
-	scanners := []security.ResponseScanner{security.NewDefaultHeaderValidator(), security.NewSecretScanner()}
+	scanners := pipelineScanners(mode)
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		if err := RunResponseInjectors(resp); err != nil {
 			return err
@@ -61,6 +95,15 @@ func NewServerInstance(port int, target *url.URL, preserveHost bool, insecureSki
 			if err := HandleUpgrade(w, req, target.Host); err != nil {
 				log.Printf("websocket upgrade error: %v", err)
 			}
+			return
+		}
+		// PipelineSecurityOnly skips ChaosMiddleware entirely: traffic goes
+		// straight through with no rule matching/firing. RunResponseInjectors
+		// then finds no stashed injectors in context and safely no-ops (its
+		// nil-slice range is a no-op), so the response reaches scanners
+		// unmodified.
+		if mode == PipelineSecurityOnly {
+			proxy.ServeHTTP(w, req)
 			return
 		}
 		ChaosMiddleware(store, http.HandlerFunc(proxy.ServeHTTP)).ServeHTTP(w, req)
@@ -78,5 +121,5 @@ func NewServerInstance(port int, target *url.URL, preserveHost bool, insecureSki
 }
 
 func Serve(port int, target *url.URL, preserveHost bool, insecureSkipVerify bool, verbose bool, store *config.Store) error {
-	return NewServerInstance(port, target, preserveHost, insecureSkipVerify, verbose, store).ListenAndServe()
+	return NewServerInstance(port, target, preserveHost, insecureSkipVerify, verbose, store, PipelineFull).ListenAndServe()
 }
