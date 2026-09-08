@@ -59,11 +59,14 @@ func pipelineScanners(mode PipelineMode) []security.ResponseScanner {
 }
 
 // NewServerInstance builds an *http.Server serving the chaos proxy. mode
-// selects which pipeline stages run (see PipelineMode). The final variadic
-// sink argument is optional: when provided, platform events (traffic +
-// security findings) are emitted per request (the desktop app uses this to
-// feed the live traffic view). The headless CLI omits it entirely and behaves
-// exactly as before.
+// selects which pipeline stages run (see PipelineMode). sessionName tags every
+// emitted traffic event and security finding with its originating session
+// ("chaos"/"security"); pass "" for non-session contexts (the CLI's plain
+// PipelineFull proxy has no session concept — and passes no event sink anyway,
+// so it never emits). The final variadic sink argument is optional: when
+// provided, platform events (traffic + security findings) are emitted per
+// request (the desktop app uses this to feed the live traffic view). The
+// headless CLI omits it entirely and behaves exactly as before.
 //
 // Scanners: the default security scanner set is built internally (option a) —
 // a hardcoded NewDefaultHeaderValidator() — rather than threading a new
@@ -73,7 +76,7 @@ func pipelineScanners(mode PipelineMode) []security.ResponseScanner {
 // scanners see the already-mutated response (e.g. a body stripped by an
 // override injector is scanned as empty), matching what the frontend truly
 // receives.
-func NewServerInstance(port int, target *url.URL, preserveHost bool, insecureSkipVerify bool, verbose bool, store *config.Store, mode PipelineMode, sinks ...EventSink) *http.Server {
+func NewServerInstance(port int, target *url.URL, preserveHost bool, insecureSkipVerify bool, verbose bool, store *config.Store, mode PipelineMode, sessionName string, sinks ...EventSink) *http.Server {
 	proxy := New(target, preserveHost, insecureSkipVerify, store)
 
 	var sink EventSink
@@ -111,7 +114,7 @@ func NewServerInstance(port int, target *url.URL, preserveHost bool, insecureSki
 
 	serverHandler := http.Handler(logger.Middleware(verbose, handler))
 	if len(sinks) > 0 {
-		serverHandler = withEventSink(sinks[0], serverHandler)
+		serverHandler = withEventSink(sessionName, sinks[0], serverHandler)
 	}
 
 	return &http.Server{
@@ -121,5 +124,5 @@ func NewServerInstance(port int, target *url.URL, preserveHost bool, insecureSki
 }
 
 func Serve(port int, target *url.URL, preserveHost bool, insecureSkipVerify bool, verbose bool, store *config.Store) error {
-	return NewServerInstance(port, target, preserveHost, insecureSkipVerify, verbose, store, PipelineFull).ListenAndServe()
+	return NewServerInstance(port, target, preserveHost, insecureSkipVerify, verbose, store, PipelineFull, "").ListenAndServe()
 }

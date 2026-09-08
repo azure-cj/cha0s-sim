@@ -16,12 +16,25 @@ import (
 // It follows the same nil-sink convention as withEventSink: when nothing is
 // listening, scanning is skipped entirely so the headless CLI path pays zero
 // overhead.
+//
+// Each emitted Finding carries the originating session ("chaos"/"security"),
+// read from the request context that withEventSink stamped (the same
+// resp.Request.Context() data flow RunResponseInjectors already relies on).
+// When that context has no session (e.g. direct-call tests, CLI-style runs
+// where no sink was ever added), SessionName stays empty.
 func RunScanners(resp *http.Response, scanners []security.ResponseScanner, sink EventSink) {
 	if sink == nil {
 		return
 	}
+	var sessionName string
+	if resp != nil && resp.Request != nil {
+		if v, ok := resp.Request.Context().Value(sessionNameKey).(string); ok {
+			sessionName = v
+		}
+	}
 	for _, scanner := range scanners {
 		for _, finding := range scanner.Scan(resp) {
+			finding.SessionName = sessionName
 			sink.Emit(finding)
 		}
 	}

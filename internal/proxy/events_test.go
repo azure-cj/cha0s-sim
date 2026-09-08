@@ -66,13 +66,13 @@ func newBackend(t *testing.T) (*httptest.Server, string) {
 	return backend, backend.URL
 }
 
-func eventProxy(t *testing.T, backendURL string, store *config.Store, sink EventSink) string {
+func eventProxy(t *testing.T, backendURL string, store *config.Store, sink EventSink, sessionName string) string {
 	t.Helper()
 	target, err := url.Parse(backendURL)
 	if err != nil {
 		t.Fatalf("failed to parse backend URL %q: %v", backendURL, err)
 	}
-	srv := NewServerInstance(0, target, false, false, false, store, PipelineFull, sink)
+	srv := NewServerInstance(0, target, false, false, false, store, PipelineFull, sessionName, sink)
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)
 	return ts.URL
@@ -81,7 +81,7 @@ func eventProxy(t *testing.T, backendURL string, store *config.Store, sink Event
 func TestEventPassthroughWithoutStoreEmitsCleanEvent(t *testing.T) {
 	_, backendURL := newBackend(t)
 	sink := newCollectingSink()
-	tsURL := eventProxy(t, backendURL, nil, sink)
+	tsURL := eventProxy(t, backendURL, nil, sink, "")
 
 	resp, err := http.Get(tsURL + "/api/users")
 	if err != nil {
@@ -119,7 +119,7 @@ rules:
       strip_body: true
 `)
 	sink := newCollectingSink()
-	tsURL := eventProxy(t, backendURL, store, sink)
+	tsURL := eventProxy(t, backendURL, store, sink, "")
 	_ = backend
 
 	resp, err := http.Get(tsURL + "/api/users")
@@ -170,7 +170,7 @@ rules:
     drop_connection: true
 `)
 	sink := newCollectingSink()
-	tsURL := eventProxy(t, backendURL, store, sink)
+	tsURL := eventProxy(t, backendURL, store, sink, "")
 
 	// The backend is never reached: the proxy hijacks and closes the TCP
 	// connection, so the client request is expected to fail.
@@ -201,7 +201,7 @@ rules:
       code: 500
 `)
 	sink := newCollectingSink()
-	tsURL := eventProxy(t, backendURL, store, sink)
+	tsURL := eventProxy(t, backendURL, store, sink, "")
 
 	resp, err := http.Get(tsURL + "/api/users")
 	if err != nil {
@@ -230,7 +230,7 @@ func TestHeadlessServerWithoutSinkStillProxies(t *testing.T) {
 
 	// No sink supplied — exactly what the headless CLI does. The chain must
 	// still serve requests without emitting or crashing.
-	srv := NewServerInstance(0, target, false, false, false, nil, PipelineFull)
+	srv := NewServerInstance(0, target, false, false, false, nil, PipelineFull, "")
 	ts := httptest.NewServer(srv.Handler)
 	defer ts.Close()
 

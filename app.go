@@ -230,7 +230,10 @@ func (a *App) StartSession(name string) string {
 
 	port := sessionPorts[sn]
 	mode := modeForSession(sn)
-	srv := proxy.NewServerInstance(port, target, false, false, false, a.store, mode, trafficEventSink{ctx: a.ctx})
+	// The session name is threaded through so every traffic event and security
+	// finding emitted by this session carries "chaos"/"security" attribution —
+	// the frontend uses it to keep per-session statistics honest.
+	srv := proxy.NewServerInstance(port, target, false, false, false, a.store, mode, string(sn), trafficEventSink{ctx: a.ctx})
 
 	ps := &proxySession{srv: srv, running: true}
 	a.sessions[sn] = ps

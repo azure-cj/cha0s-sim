@@ -24,6 +24,11 @@ type EventSink interface {
 // TrafficEvent is a single normalized, post-hoc record of a request that went
 // through the proxy. It combines request identity, measured latency/status,
 // and the chaos effects that actually fired for that request.
+//
+// SessionName identifies which named session ("chaos" or "security") produced
+// the event, so consumers can separate events by session. It is empty for
+// events from non-session contexts (e.g. the CLI's plain PipelineFull proxy,
+// which has no session concept and passes no event sink anyway).
 type TrafficEvent struct {
 	Ts         time.Time     `json:"ts"`          // when the request started
 	Method     string        `json:"method"`      // e.g. GET
@@ -32,6 +37,7 @@ type TrafficEvent struct {
 	Status     int           `json:"status"`      // 0 when the connection was dropped before any response
 	DurationMs int64         `json:"duration_ms"` // wall-clock time from start to response/drop
 	Effects    []ChaosEffect `json:"effects"`     // empty when the request passed through cleanly
+	SessionName string       `json:"sessionName"` // "chaos" / "security", or "" when not session-scoped
 }
 
 // TrafficEvent implements platform.Reportable so live traffic flows through
@@ -66,7 +72,12 @@ type ChaosEffect struct {
 // withEventSink wraps the full server handler so that a live trace of every
 // request can be emitted to the frontend. It is a no-op (returns next
 // unchanged) when sink is nil, which keeps the headless CLI path identical.
-func withEventSink(sink EventSink, next http.Handler) http.Handler {
+//
+// sessionName is stamped into the request context (alongside the effects
+// holder) so BOTH the traffic event emitted here AND the security findings
+// emitted later by the scanner path (which only has the response, via
+// resp.Request.Context()) carry the originating session's identity.
+func withEventSink(sessionName string, sink EventSink, next http.Handler) http.Handler {
 	if sink == nil {
 		return next
 	}
@@ -83,16 +94,18 @@ func withEventSink(sink EventSink, next http.Handler) http.Handler {
 		rec := &eventStatusRecorder{ResponseWriter: w}
 		effects := &eventEffects{}
 		ctx := context.WithValue(req.Context(), eventEffectsKey, effects)
+		ctx = context.WithValue(ctx, sessionNameKey, sessionName)
 		next.ServeHTTP(rec, req.WithContext(ctx))
 
 		sink.Emit(TrafficEvent{
-			Ts:         started,
-			Method:     req.Method,
-			Path:       req.URL.Path,
-			Host:       req.Host,
-			Status:     rec.status,
-			DurationMs: time.Since(started).Milliseconds(),
-			Effects:    effects.effects,
+			Ts:          started,
+			Method:      req.Method,
+			Path:        req.URL.Path,
+			Host:        req.Host,
+			Status:      rec.status,
+			DurationMs:  time.Since(started).Milliseconds(),
+			Effects:     effects.effects,
+			SessionName: sessionName,
 		})
 	})
 }

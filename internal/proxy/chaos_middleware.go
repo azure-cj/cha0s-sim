@@ -21,6 +21,13 @@ const respInjectorsKey ctxKey = "chaos_resp_injectors"
 // outer wrapper.
 const eventEffectsKey ctxKey = "chaos_event_effects"
 
+// sessionNameKey carries the originating session name ("chaos"/"security")
+// through the request so the traffic-logging wrapper and the scanner path can
+// tag emitted events with it. It is stamped by withEventSink and read by
+// RunScanners via the response's request context (the same data-flow pattern
+// as respInjectorsKey). Empty for non-session contexts (e.g. the CLI proxy).
+const sessionNameKey ctxKey = "session_name"
+
 // eventEffects is a mutable holder shared between withEventSink (who allocates
 // it via the request context) and this middleware (who populates it).
 type eventEffects struct {

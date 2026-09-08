@@ -18,6 +18,11 @@ type Finding struct {
 	Detail          string
 	FindingSeverity string // "info", "warning", or "critical"
 	Location        string // e.g. "header:Content-Security-Policy"
+	// SessionName identifies which named session ("chaos"/"security") produced
+	// this finding. It is stamped by the proxy's scanner runner (RunScanners)
+	// from the request context; it is empty when the finding did not originate
+	// from a named session (e.g. the CLI proxy, direct-call tests).
+	SessionName string `json:"sessionName"`
 }
 
 func (f Finding) Category() string { return f.FindingCategory }

@@ -155,7 +155,7 @@ func TestRunScannersEmptyScannerListIsSafe(t *testing.T) {
 func TestNewServerInstanceEmitsFindingsOnRealTraffic(t *testing.T) {
 	_, backendURL := newBackend(t)
 	sink := newCollectingSink()
-	tsURL := eventProxy(t, backendURL, nil, sink)
+	tsURL := eventProxy(t, backendURL, nil, sink, "")
 
 	resp, err := http.Get(tsURL + "/api/users")
 	if err != nil {

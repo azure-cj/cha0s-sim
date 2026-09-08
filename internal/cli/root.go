@@ -55,7 +55,10 @@ var rootCmd = &cobra.Command{
 }
 
 func run(port int, u *url.URL, preserveHost, insecureSkipVerify, verbose bool, adminPort int, runAdmin bool, store *config.Store) error {
-	proxySrv := proxy.NewServerInstance(port, u, preserveHost, insecureSkipVerify, verbose, store, proxy.PipelineFull)
+	// SessionName is "" for CLI-originated events: the plain CLI proxy has no
+	// session concept (it is not part of the desktop's session system) and, in
+	// practice, passes no event sink, so it never emits events at all.
+	proxySrv := proxy.NewServerInstance(port, u, preserveHost, insecureSkipVerify, verbose, store, proxy.PipelineFull, "")
 
 	errCh := make(chan error, 2)
 

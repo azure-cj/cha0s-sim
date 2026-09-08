@@ -72,7 +72,7 @@ rules:
 	sink := newCollectingSink()
 
 	target, _ := newTestURL(backendURL)
-	srv := NewServerInstance(0, target, false, false, false, store, PipelineChaosOnly, sink)
+	srv := NewServerInstance(0, target, false, false, false, store, PipelineChaosOnly, "", sink)
 	ts := newTestServer(t, srv.Handler)
 
 	resp, err := http.Get(ts.URL + "/api/users")
@@ -125,7 +125,7 @@ rules:
 	sink := newCollectingSink()
 
 	target, _ := newTestURL(backendURL)
-	srv := NewServerInstance(0, target, false, false, false, store, PipelineSecurityOnly, sink)
+	srv := NewServerInstance(0, target, false, false, false, store, PipelineSecurityOnly, "", sink)
 	ts := newTestServer(t, srv.Handler)
 
 	resp, err := http.Get(ts.URL + "/api/users")
@@ -177,7 +177,7 @@ rules:
 	sink := newCollectingSink()
 
 	target, _ := newTestURL(backendURL)
-	srv := NewServerInstance(0, target, false, false, false, store, PipelineFull, sink)
+	srv := NewServerInstance(0, target, false, false, false, store, PipelineFull, "", sink)
 	ts := newTestServer(t, srv.Handler)
 
 	resp, err := http.Get(ts.URL + "/api/users")
