@@ -1,5 +1,5 @@
 import {ChangeEvent, useCallback, useEffect, useRef, useState} from 'react';
-import {EventsOn} from "../wailsjs/runtime/runtime";
+import {ClipboardSetText, EventsOn} from "../wailsjs/runtime/runtime";
 import {
     CreateRule,
     GetAllSessionStatuses,
@@ -51,9 +51,22 @@ interface StressUpdatePayload {
 interface LogEntry {
     id: number;
     time: string;
+    tsMs: number; // wall-clock ms when the entry arrived (drives suggestion expiry)
     severity: Severity;
     summary: string;
+    event?: TrafficEventPayload; // present only for traffic entries (not security findings)
+    finding?: FindingPayload;    // present only for security-finding entries
 }
+
+// Suggestion badges on clean traffic events let beginners inject chaos onto an
+// exact path/method in one click. Each action tracks its own lifecycle so a
+// created rule can show "✓ Added" feedback and a failure can surface its error.
+interface SuggestionState {
+    latency: {status: 'idle' | 'creating' | 'added' | 'error'; message?: string};
+    error: {status: 'idle' | 'creating' | 'added' | 'error'; message?: string};
+}
+
+type SuggestionAction = 'latency' | 'error';
 
 type View = 'dashboard' | 'chaos' | 'stress' | 'security' | 'settings';
 
@@ -118,6 +131,168 @@ function summarizeTraffic(evt: TrafficEventPayload): string {
         return `${e.kind}${detail}`;
     }).join(', ');
     return `${base} [${effects}]`;
+}
+
+// generateCurl reconstructs a MINIMAL curl command (method + URL) from a
+// recorded traffic event, pointed at the configured upstream target URL.
+// Traffic events do not capture the original request headers, body, or query
+// string, so a faithful reproduction is not possible — the copy action adds an
+// explicit disclosure comment above the command rather than claiming full
+// request reconstruction.
+const CURL_DISCLOSURE = '# Method + path only — original request headers, body, and query string are not captured by traffic events';
+function generateCurl(event: TrafficEventPayload, targetURL: string): string {
+    const method = (event.method || 'GET').toUpperCase();
+    const base = (targetURL || '').replace(/\/+$/, '');
+    const path = event.path || '/';
+    const url = `${base}${path}`;
+    return method === 'GET'
+        ? `curl "${url}"`
+        : `curl -X ${method} "${url}"`;
+}
+
+// ---------------------------------------------------------------------------
+// Resilience & Security Scorecard
+// ---------------------------------------------------------------------------
+
+// ScorecardStats is the derived snapshot the Dashboard's "Damage Control
+// Certificate" modal renders and exports. It is computed from the live log
+// entries plus the most recent stress-test snapshot (when one exists).
+interface ScorecardStats {
+    generatedAt: string;
+    traffic: {
+        total: number;   // traffic events seen
+        mutated: number; // events that had at least one chaos effect fire
+        hitRate: number; // mutated / total (0..1), 0 when total is 0
+    };
+    security: {
+        missingHeaders: number; // missing_header + weak_header findings
+        leakedSecrets: number;  // leaked_secret findings
+        findingCount: number;   // total security findings
+    };
+    performance: {
+        present: boolean; // false when no stress data has been received
+        p50Ms: number;
+        p95Ms: number;
+        p99Ms: number;
+        rps: number;
+        errorRate: number;
+    };
+}
+
+// computeScorecard derives the certificate numbers from the combined log. Only
+// entries carrying a TrafficEventPayload count toward traffic stats; only
+// entries carrying a FindingPayload count toward security stats.
+function computeScorecard(entries: LogEntry[], stress: StressUpdatePayload | null): ScorecardStats {
+    let trafficTotal = 0;
+    let trafficMutated = 0;
+    let missingHeaders = 0;
+    let leakedSecrets = 0;
+    let findingCount = 0;
+
+    for (const entry of entries) {
+        if (entry.event) {
+            trafficTotal += 1;
+            if (entry.event.effects && entry.event.effects.length > 0) {
+                trafficMutated += 1;
+            }
+        }
+        if (entry.finding) {
+            findingCount += 1;
+            if (entry.finding.FindingCategory === 'leaked_secret') {
+                leakedSecrets += 1;
+            } else if (
+                entry.finding.FindingCategory === 'missing_header' ||
+                entry.finding.FindingCategory === 'weak_header'
+            ) {
+                missingHeaders += 1;
+            }
+        }
+    }
+
+    return {
+        generatedAt: new Date().toLocaleString(),
+        traffic: {
+            total: trafficTotal,
+            mutated: trafficMutated,
+            hitRate: trafficTotal === 0 ? 0 : trafficMutated / trafficTotal,
+        },
+        security: {
+            missingHeaders,
+            leakedSecrets,
+            findingCount,
+        },
+        performance: {
+            present: stress !== null,
+            p50Ms: stress?.p50Ms ?? 0,
+            p95Ms: stress?.p95Ms ?? 0,
+            p99Ms: stress?.p99Ms ?? 0,
+            rps: stress?.rps ?? 0,
+            errorRate: stress?.errorRate ?? 0,
+        },
+    };
+}
+
+// buildMarkdownReport renders the certificate as a clean, screenshot-friendly
+// Markdown document that developers can paste into PR descriptions or share.
+// It carries the same honesty as the on-screen modal: the 200-event scope is
+// always disclosed, the both-sessions caveat is included when applicable, and
+// the stress-test status (live vs. last completed) is labelled.
+type ReportContext = {
+    mixedSessions: boolean;      // both chaos + security sessions have been started this app instance
+    stressRunning: boolean;      // a stress test is currently streaming updates
+    stressCompletedAt: string | null; // time when the last completed run sent its final snapshot
+};
+
+const SCORECARD_SCOPE_NOTE = 'Based on the most recent 200 events shown in the live feed — not your entire session.';
+const SCORECARD_MIXED_NOTE = 'Both the Chaos and Security sessions have been started in this app instance. If their traffic overlaps in this feed window, this report combines both sessions — the chaos hit rate may be understated and the statistics are not separated per session.';
+const SCORECARD_PERF_LIVE = 'Live — test in progress';
+const SCORECARD_PERF_COMPLETED = (t: string) => `Latest stress test (completed at ${t})`;
+
+function buildMarkdownReport(stats: ScorecardStats, opts: ReportContext): string {
+    const pct = (v: number) => `${Math.round(v * 100)}%`;
+    const perfStatus = opts.stressRunning
+        ? 'Stress Test — live'
+        : opts.stressCompletedAt
+        ? `Stress Test — completed at ${opts.stressCompletedAt}`
+        : 'Stress Test';
+    const lines = [
+        '# Damage Control Certificate — cha0s;sim',
+        '',
+        `Generated: ${stats.generatedAt}`,
+        '',
+        '## Traffic Health',
+        `- Total requests processed: ${stats.traffic.total}`,
+        `- Total mutated requests: ${stats.traffic.mutated}`,
+        `- Chaos hit rate: ${pct(stats.traffic.hitRate)}`,
+        '',
+        '## Security Health',
+        `- Missing / weak headers: ${stats.security.missingHeaders}`,
+        `- Leaked secrets: ${stats.security.leakedSecrets}`,
+        `- Total findings: ${stats.security.findingCount}`,
+        '',
+    ];
+    if (stats.performance.present) {
+        lines.push(
+            `## Performance (${perfStatus})`,
+            `- p50: ${stats.performance.p50Ms} ms`,
+            `- p95: ${stats.performance.p95Ms} ms`,
+            `- p99: ${stats.performance.p99Ms} ms`,
+            `- RPS: ${Math.round(stats.performance.rps)}`,
+            `- Error rate: ${pct(stats.performance.errorRate)}`,
+            '',
+        );
+    } else {
+        lines.push('## Performance (Stress Test)', '- No stress data recorded.', '');
+    }
+    lines.push(
+        '## Notes',
+        `- ${SCORECARD_SCOPE_NOTE}`,
+    );
+    if (opts.mixedSessions) {
+        lines.push(`- ${SCORECARD_MIXED_NOTE}`);
+    }
+    lines.push('', '---', '', '_Generated by cha0s;sim_');
+    return lines.join('\n');
 }
 
 // Plain-language phrasing helpers for the Chaos Engine view. These translate
@@ -1324,6 +1499,7 @@ function SecurityView() {
             const entry: LogEntry = {
                 id,
                 time: new Date().toLocaleTimeString(),
+                tsMs: Date.now(),
                 severity: normalizeSeverity(f.FindingSeverity),
                 summary: `${f.FindingCategory}: ${f.Detail}`,
             };
@@ -1403,25 +1579,214 @@ function SecurityView() {
     );
 }
 
+// A single "smart auto-suggestion" badge on a clean traffic event. Clicking it
+// injects a pre-filled chaos rule via the shared CreateRule binding; the badge
+// mirrors the async outcome inline (Adding… / ✓ Added / ⚠ Failed) so a beginner
+// always knows what happened without leaving the Dashboard.
+function SuggestionBadge({label, state, onClick}: {
+    label: string;
+    state: {status: 'idle' | 'creating' | 'added' | 'error'; message?: string};
+    onClick: () => void;
+}) {
+    const text = state.status === 'creating'
+        ? 'Adding…'
+        : state.status === 'added'
+        ? '✓ Added'
+        : state.status === 'error'
+        ? '⚠ Failed'
+        : label;
+    const cls = ['suggestion-badge']
+        .concat(state.status === 'creating' ? ['suggestion-badge--creating'] : [])
+        .concat(state.status === 'added' ? ['suggestion-badge--added'] : [])
+        .concat(state.status === 'error' ? ['suggestion-badge--error'] : [])
+        .join(' ');
+    return (
+        <button className={cls} onClick={onClick} disabled={state.status === 'creating'} title={state.message}>
+            {text}
+        </button>
+    );
+}
+
+// A "Damage Control Certificate" — the printable/exportable summary of the
+// active testing session. High-contrast monochrome so a manual screenshot or
+// the Markdown export both read cleanly in a PR or report.
+function ScorecardModal({stats, onClose, onCopy, copied, mixedSessions, stressRunning, stressCompletedAt}: {
+    stats: ScorecardStats;
+    onClose: () => void;
+    onCopy: () => void;
+    copied: boolean;
+    mixedSessions: boolean;
+    stressRunning: boolean;
+    stressCompletedAt: string | null;
+}) {
+    const pct = (v: number) => `${Math.round(v * 100)}%`;
+    const empty = stats.traffic.total === 0 && stats.security.findingCount === 0;
+    const perfStatus = stats.performance.present
+        ? stressRunning
+            ? SCORECARD_PERF_LIVE
+            : stressCompletedAt
+            ? SCORECARD_PERF_COMPLETED(stressCompletedAt)
+            : 'Latest stress test'
+        : '';
+    return (
+        <div className="scorecard-overlay" onClick={onClose}>
+            <div className="scorecard" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
+                <div className="scorecard-head">
+                    <div className="scorecard-title">DAMAGE CONTROL CERTIFICATE</div>
+                    <div className="scorecard-subtitle">cha0s;sim — testing session summary</div>
+                </div>
+
+                <div className="scorecard-disclosure">
+                    {SCORECARD_SCOPE_NOTE}
+                </div>
+                {mixedSessions && (
+                    <div className="scorecard-warning">
+                        {SCORECARD_MIXED_NOTE}
+                    </div>
+                )}
+
+                {empty && (
+                    <div className="scorecard-empty">
+                        No traffic or findings recorded yet. Start a chaos/security session and send some
+                        requests before generating a report.
+                    </div>
+                )}
+
+                <div className="scorecard-grid">
+                    <section className="scorecard-section">
+                        <div className="scorecard-section-title">TRAFFIC HEALTH</div>
+                        <dl className="scorecard-list">
+                            <div className="scorecard-row">
+                                <dt>Requests processed</dt>
+                                <dd>{stats.traffic.total}</dd>
+                            </div>
+                            <div className="scorecard-row">
+                                <dt>Mutated requests</dt>
+                                <dd>{stats.traffic.mutated}</dd>
+                            </div>
+                            <div className="scorecard-row">
+                                <dt>Chaos hit rate</dt>
+                                <dd>{pct(stats.traffic.hitRate)}</dd>
+                            </div>
+                        </dl>
+                    </section>
+
+                    <section className="scorecard-section">
+                        <div className="scorecard-section-title">SECURITY HEALTH</div>
+                        <dl className="scorecard-list">
+                            <div className="scorecard-row">
+                                <dt>Missing / weak headers</dt>
+                                <dd>{stats.security.missingHeaders}</dd>
+                            </div>
+                            <div className="scorecard-row">
+                                <dt>Leaked secrets</dt>
+                                <dd>{stats.security.leakedSecrets}</dd>
+                            </div>
+                            <div className="scorecard-row">
+                                <dt>Total findings</dt>
+                                <dd>{stats.security.findingCount}</dd>
+                            </div>
+                        </dl>
+                    </section>
+
+                    <section className="scorecard-section">
+                        <div className="scorecard-section-title">PERFORMANCE</div>
+                        {stats.performance.present && perfStatus && (
+                            <div className="scorecard-muted">{perfStatus}</div>
+                        )}
+                        {stats.performance.present ? (
+                            <dl className="scorecard-list">
+                                <div className="scorecard-row">
+                                    <dt>p50 latency</dt>
+                                    <dd>{stats.performance.p50Ms} ms</dd>
+                                </div>
+                                <div className="scorecard-row">
+                                    <dt>p95 latency</dt>
+                                    <dd>{stats.performance.p95Ms} ms</dd>
+                                </div>
+                                <div className="scorecard-row">
+                                    <dt>p99 latency</dt>
+                                    <dd>{stats.performance.p99Ms} ms</dd>
+                                </div>
+                                <div className="scorecard-row">
+                                    <dt>RPS</dt>
+                                    <dd>{Math.round(stats.performance.rps)}</dd>
+                                </div>
+                                <div className="scorecard-row">
+                                    <dt>Error rate</dt>
+                                    <dd>{pct(stats.performance.errorRate)}</dd>
+                                </div>
+                            </dl>
+                        ) : (
+                            <div className="scorecard-muted">No stress data recorded.</div>
+                        )}
+                    </section>
+                </div>
+
+                <div className="scorecard-foot">
+                    <div className="scorecard-meta">
+                        Generated {stats.generatedAt}
+                    </div>
+                    <div className="scorecard-actions">
+                        <button className="btn" onClick={onCopy}>
+                            {copied ? 'Copied!' : 'Copy Report to Clipboard'}
+                        </button>
+                        <button className="btn btn--danger" onClick={onClose}>
+                            Close
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 function App() {
     const [booted, setBooted] = useState(false);
     const [fading, setFading] = useState(false);
     const [view, setView] = useState<View>('dashboard');
 
     const [sessionStatus, setSessionStatus] = useState<Record<string, boolean>>({});
+    // Tracks which sessions have been observed running AT ANY POINT during this
+    // app instance, so the scorecard can honestly disclose whether its feed may
+    // have mixed traffic from both the Chaos and Security sessions.
+    const [everRunning, setEverRunning] = useState<Record<string, boolean>>({});
     const [entries, setEntries] = useState<LogEntry[]>([]);
+    const [targetURL, setTargetURL] = useState('');
+    const [copiedId, setCopiedId] = useState<number | null>(null);
+    const [now, setNow] = useState(Date.now());
+    const [suggestions, setSuggestions] = useState<Record<number, SuggestionState>>({});
+    const [latestStress, setLatestStress] = useState<StressUpdatePayload | null>(null);
+    const [stressRunning, setStressRunning] = useState(false);
+    const [stressCompletedAt, setStressCompletedAt] = useState<string | null>(null);
+    const [scorecardOpen, setScorecardOpen] = useState(false);
+    const [reportCopied, setReportCopied] = useState(false);
     const idRef = useRef(0);
+    const copyTimer = useRef<number | null>(null);
+    const reportTimer = useRef<number | null>(null);
+
+    const bothSessionsRan = !!everRunning[CHAOS_SESSION_NAME] && !!everRunning[SECURITY_SESSION_NAME];
 
     const refresh = () => {
-        GetAllSessionStatuses().then(setSessionStatus);
+        GetAllSessionStatuses().then(statuses => {
+            setSessionStatus(statuses);
+            setEverRunning(prev => {
+                const next = {...prev};
+                Object.entries(statuses).forEach(([name, running]) => {
+                    if (running) next[name] = true;
+                });
+                return next;
+            });
+        });
     };
 
-    const addEntry = (entry: Omit<LogEntry, 'id' | 'time'>) => {
+    const addEntry = (entry: Omit<LogEntry, 'id' | 'time' | 'tsMs'>) => {
         idRef.current += 1;
         const full: LogEntry = {
             ...entry,
             id: idRef.current,
             time: new Date().toLocaleTimeString(),
+            tsMs: Date.now(),
         };
         setEntries(prev => [full, ...prev].slice(0, 200));
     };
@@ -1429,15 +1794,25 @@ function App() {
     useEffect(() => {
         refresh();
 
+        // Load the upstream target URL once so the Dashboard's "Copy as cURL"
+        // action can point method + path at the configured upstream target.
+        GetSettings().then(s => setTargetURL(s.targetURL));
+
         // Poll session running states so the Dashboard overview cards and the
         // sidebar session indicators stay current while sessions run.
         const statusTimer = window.setInterval(refresh, 1000);
+
+        // Tick frequently enough that auto-suggestion badges reliably disappear
+        // ~30s after their clean traffic event arrived, without needing any
+        // other state to change first.
+        const nowTimer = window.setInterval(() => setNow(Date.now()), 1000);
 
         const offTraffic = EventsOn('traffic', (data: any) => {
             const evt = data as TrafficEventPayload;
             addEntry({
                 severity: trafficSeverity(evt.status),
                 summary: summarizeTraffic(evt),
+                event: evt,
             });
         });
         const offFinding = EventsOn('security_finding', (data: any) => {
@@ -1445,15 +1820,121 @@ function App() {
             addEntry({
                 severity: normalizeSeverity(f.FindingSeverity),
                 summary: `${f.FindingCategory}: ${f.Detail}`,
+                finding: f,
             });
+        });
+        // Keep the latest stress snapshot so the scorecard can report final
+        // p50/p95/p99 latency and error rate even after a run has finished.
+        // The final flag distinguishes a live run from the last completed one,
+        // so the Performance section can label which one the numbers come from.
+        const offStress = EventsOn('stress_update', (data: any) => {
+            const u = data as StressUpdatePayload;
+            setLatestStress(u);
+            setStressRunning(!u.final);
+            if (u.final) setStressCompletedAt(new Date().toLocaleTimeString());
         });
 
         return () => {
             window.clearInterval(statusTimer);
+            window.clearInterval(nowTimer);
+            if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+            if (reportTimer.current !== null) window.clearTimeout(reportTimer.current);
             offTraffic();
             offFinding();
+            offStress();
         };
     }, []);
+
+    // Prune suggestion feedback once its traffic entry is old enough that the
+    // badges are no longer rendered, so the map can't grow without bound.
+    useEffect(() => {
+        const staleThreshold = Date.now() - 30000;
+        setSuggestions(prev => {
+            const staleIds = Object.keys(prev).filter(id => {
+                const tsMs = entries.find(e => e.id === Number(id))?.tsMs ?? 0;
+                return tsMs < staleThreshold;
+            });
+            if (staleIds.length === 0) return prev;
+            const next = {...prev};
+            staleIds.forEach(id => delete next[Number(id)]);
+            return next;
+        });
+    }, [entries, now]);
+
+    const handleCopy = (entryId: number, evt: TrafficEventPayload) => {
+        const curl = generateCurl(evt, targetURL);
+        ClipboardSetText(`${CURL_DISCLOSURE}\n${curl}`).then(() => {
+            setCopiedId(entryId);
+            if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+            copyTimer.current = window.setTimeout(() => setCopiedId(null), 1500);
+        });
+    };
+
+    // Copy the Markdown export of the current scorecard to the clipboard and
+    // flash an inline "Copied!" state on the button. The export carries the
+    // same scope/attribution/stress-status disclosures as the on-screen modal.
+    const handleCopyReport = (stats: ScorecardStats) => {
+        const ctx: ReportContext = {
+            mixedSessions: bothSessionsRan,
+            stressRunning,
+            stressCompletedAt,
+        };
+        ClipboardSetText(buildMarkdownReport(stats, ctx)).then(() => {
+            setReportCopied(true);
+            if (reportTimer.current !== null) window.clearTimeout(reportTimer.current);
+            reportTimer.current = window.setTimeout(() => setReportCopied(false), 1500);
+        });
+    };
+
+    // One-click chaos injection from a clean traffic event. Builds a fully
+    // pre-filled CreateRuleRequest for the exact path+method and fires it
+    // directly through the backend binding (the same channel the wizard uses),
+    // then surfaces success/failure inline on the badge.
+    const applySuggestion = async (entryId: number, evt: TrafficEventPayload, action: SuggestionAction) => {
+        const mark = (status: SuggestionState['latency']['status'], message?: string) => {
+            setSuggestions(prev => {
+                const existing = prev[entryId] ?? {latency: {status: 'idle'}, error: {status: 'idle'}};
+                return {...prev, [entryId]: {...existing, [action]: {status, message}}};
+            });
+        };
+
+        const method = (evt.method || 'GET').toUpperCase();
+        const label = action === 'latency' ? '+3s latency' : '+500 error';
+        const baseName = `${method} ${evt.path} — ${label}`;
+        mark('creating');
+
+        // Rule names must be unique, and this name is deterministic for a given
+        // method+path+action. Before creating, check the current rule list and
+        // append the lowest unused "(N)" suffix so clicking the same suggestion
+        // twice creates a distinct rule instead of a duplicate-name failure.
+        const existingNames = new Set((await GetRules()).map(r => r.name));
+        let name = baseName;
+        for (let n = 2; existingNames.has(name); n++) {
+            name = `${baseName} (${n})`;
+        }
+
+        const req = new config.CreateRuleRequest({
+            name,
+            path: evt.path,
+            methods: [method],
+            frequency: 'always',
+            effect: action === 'latency' ? 'slow' : 'error',
+            slowMs: action === 'latency' ? 3000 : undefined,
+            errorCode: action === 'error' ? 500 : undefined,
+        });
+        CreateRule(req).then(result => {
+            if (result === '') {
+                mark('added', 'Added');
+                return;
+            }
+            if (result.startsWith('warning:')) {
+                // Rule created in-memory but not persisted; treat as added.
+                mark('added', 'Added');
+                return;
+            }
+            mark('error', result);
+        });
+    };
 
     const handleBoot = () => {
         if (fading) return;
@@ -1559,18 +2040,57 @@ function App() {
                             })}
                         </div>
                         <div className="log-wrap">
-                            <div className="log-title">LIVE EVENT LOG — traffic + security_finding</div>
+                            <div className="log-title-row">
+                                <div className="log-title">LIVE EVENT LOG — traffic + security_finding</div>
+                                <button className="btn scorecard-trigger" onClick={() => setScorecardOpen(true)}>
+                                    Generate Report
+                                </button>
+                            </div>
                             <div className="log-panel">
                                 {entries.length === 0 && (
                                     <div className="log-empty">Awaiting traffic... start a session and send a request.</div>
                                 )}
-                                {entries.map(e => (
-                                    <div className="log-entry" key={e.id}>
-                                        <span className="log-time">{e.time}</span>
-                                        <span className={`log-dot log-dot--${e.severity}`} />
-                                        <span className="log-summary">{e.summary}</span>
-                                    </div>
-                                ))}
+                                {entries.map(e => {
+                                    const evt = e.event;
+                                    const isCopied = copiedId === e.id;
+                                    // Suggest chaos only for clean traffic events
+                                    // that are still recent enough to be useful.
+                                    const isClean = !!evt && (!evt.effects || evt.effects.length === 0);
+                                    const isFresh = now - e.tsMs < 30000;
+                                    const suggest = isClean && isFresh;
+                                    const sug = suggestions[e.id];
+                                    return (
+                                        <div className="log-entry" key={e.id}>
+                                            <span className="log-time">{e.time}</span>
+                                            <span className={`log-dot log-dot--${e.severity}`} />
+                                            <span className="log-summary">{e.summary}</span>
+                                            {suggest && evt && (
+                                                <span className="log-suggestions">
+                                                    <SuggestionBadge
+                                                        label="⚡ +3s Latency"
+                                                        state={sug?.latency ?? {status: 'idle'}}
+                                                        onClick={() => applySuggestion(e.id, evt, 'latency')}
+                                                    />
+                                                    <SuggestionBadge
+                                                        label="🔥 +500 Error"
+                                                        state={sug?.error ?? {status: 'idle'}}
+                                                        onClick={() => applySuggestion(e.id, evt, 'error')}
+                                                    />
+                                                </span>
+                                            )}
+                                            {evt ? (
+                                                <button
+                                                    className={`log-copy${isCopied ? ' log-copy--copied' : ''}`}
+                                                    onClick={() => handleCopy(e.id, evt)}
+                                                    title="Copy method + URL only — headers, body, and query string are not captured"
+                                                    aria-label="Copy method + URL (headers, body, query not captured)"
+                                                >
+                                                    {isCopied ? 'Copied!' : '⎘'}
+                                                </button>
+                                            ) : null}
+                                        </div>
+                                    );
+                                })}
                             </div>
                         </div>
                     </div>
@@ -1592,6 +2112,17 @@ function App() {
                     <SettingsForm />
                 )}
             </main>
+            {scorecardOpen && (
+                <ScorecardModal
+                    stats={computeScorecard(entries, latestStress)}
+                    onClose={() => setScorecardOpen(false)}
+                    onCopy={() => handleCopyReport(computeScorecard(entries, latestStress))}
+                    copied={reportCopied}
+                    mixedSessions={bothSessionsRan}
+                    stressRunning={stressRunning}
+                    stressCompletedAt={stressCompletedAt}
+                />
+            )}
         </div>
     );
 }
