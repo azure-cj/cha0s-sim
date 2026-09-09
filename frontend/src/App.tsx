@@ -1,4 +1,17 @@
 import {ChangeEvent, useCallback, useEffect, useRef, useState} from 'react';
+import {
+    AlertTriangle,
+    ArrowRight,
+    Check,
+    Crosshair,
+    Dna,
+    Flame,
+    TrendingUp,
+    Turtle,
+    Unplug,
+    Zap,
+    type LucideIcon,
+} from 'lucide-react';
 import {ClipboardSetText, EventsOn} from "../wailsjs/runtime/runtime";
 import {
     CreateRule,
@@ -63,7 +76,7 @@ interface LogEntry {
 
 // Suggestion badges on clean traffic events let beginners inject chaos onto an
 // exact path/method in one click. Each action tracks its own lifecycle so a
-// created rule can show "✓ Added" feedback and a failure can surface its error.
+// created rule can show "Added" feedback and a failure can surface its error.
 interface SuggestionState {
     latency: {status: 'idle' | 'creating' | 'added' | 'error'; message?: string};
     error: {status: 'idle' | 'creating' | 'added' | 'error'; message?: string};
@@ -369,17 +382,38 @@ function chaosMethodsDetail(r: main.RuleView): string {
 
 interface ChaosTag {
     kind: string;
-    label: string; // emoji + short plain-language label shown in the pill
+    label: string; // icon + short plain-language label shown in the pill
     title: string; // HTML title tooltip with a one-line plain-language description
+}
+
+// Chaos-effect tags share the accent-cyan pill styling; each effect is
+// differentiated by its lucide glyph, so the pills stay a uniform accent color
+// via currentColor instead of mixing severities in a compact row.
+const CHAOS_EFFECT_ICONS: Record<string, LucideIcon> = {
+    latency: Turtle,
+    status: AlertTriangle,
+    drop: Unplug,
+    mangle: Dna,
+    fuzz: Crosshair,
+};
+
+function ChaosTagPill({tag}: {tag: ChaosTag}) {
+    const Icon = CHAOS_EFFECT_ICONS[tag.kind];
+    return (
+        <span className="chaos-tag" title={tag.title}>
+            {Icon && <Icon size={12} strokeWidth={2.5} aria-hidden="true" />}
+            {tag.label}
+        </span>
+    );
 }
 
 function chaosTags(r: main.RuleView): ChaosTag[] {
     const tags: ChaosTag[] = [];
-    if (r.hasLatency) tags.push({kind: 'latency', label: '🐢 Slows it down', title: 'Delays the response to simulate a slow network'});
-    if (r.hasStatusOverride) tags.push({kind: 'status', label: '⚠️ Fakes an error', title: 'Returns a fake error status like 500 or 503'});
-    if (r.hasDropConnection) tags.push({kind: 'drop', label: '🔌 Cuts the connection', title: 'Simulates the connection suddenly dropping, like lost WiFi'});
-    if (r.hasMangle) tags.push({kind: 'mangle', label: '🧬 Corrupts the data', title: 'Deletes or corrupts fields in the response'});
-    if (r.hasFuzz) tags.push({kind: 'fuzz', label: '🎯 Injects bad input', title: 'Sends malicious test payloads like SQL injection or XSS strings'});
+    if (r.hasLatency) tags.push({kind: 'latency', label: 'Slows it down', title: 'Delays the response to simulate a slow network'});
+    if (r.hasStatusOverride) tags.push({kind: 'status', label: 'Fakes an error', title: 'Returns a fake error status like 500 or 503'});
+    if (r.hasDropConnection) tags.push({kind: 'drop', label: 'Cuts the connection', title: 'Simulates the connection suddenly dropping, like lost WiFi'});
+    if (r.hasMangle) tags.push({kind: 'mangle', label: 'Corrupts the data', title: 'Deletes or corrupts fields in the response'});
+    if (r.hasFuzz) tags.push({kind: 'fuzz', label: 'Injects bad input', title: 'Sends malicious test payloads like SQL injection or XSS strings'});
     return tags;
 }
 
@@ -675,7 +709,7 @@ function ChaosEngine() {
                                 {tags.length > 0 && (
                                     <div className="chaos-row-tags">
                                         {tags.map(t => (
-                                            <span className="chaos-tag" key={t.kind} title={t.title}>{t.label}</span>
+                                            <ChaosTagPill key={t.kind} tag={t} />
                                         ))}
                                     </div>
                                 )}
@@ -706,12 +740,12 @@ function ChaosEngine() {
 type EffectId = 'slow' | 'error' | 'drop' | 'corrupt' | 'attack';
 type AttackId = 'sqli' | 'xss' | 'path_traversal';
 
-const EFFECT_CARDS: {id: EffectId; icon: string; name: string; desc: string}[] = [
-    {id: 'slow', icon: '🐢', name: 'Slow it down', desc: 'Delay the response to simulate a slow network'},
-    {id: 'error', icon: '⚠️', name: 'Fake an error', desc: 'Return a fake error status instead of the real response'},
-    {id: 'drop', icon: '🔌', name: 'Cut the connection', desc: 'Simulate the connection suddenly dropping'},
-    {id: 'corrupt', icon: '🧬', name: 'Corrupt the data', desc: 'Remove fields from the response'},
-    {id: 'attack', icon: '🎯', name: 'Test for security holes', desc: 'Send malicious test data to check input validation'},
+const EFFECT_CARDS: {id: EffectId; icon: LucideIcon; color: string; name: string; desc: string}[] = [
+    {id: 'slow', icon: Turtle, color: 'var(--accent-cyan)', name: 'Slow it down', desc: 'Delay the response to simulate a slow network'},
+    {id: 'error', icon: AlertTriangle, color: 'var(--severity-warning)', name: 'Fake an error', desc: 'Return a fake error status instead of the real response'},
+    {id: 'drop', icon: Unplug, color: 'var(--accent-cyan)', name: 'Cut the connection', desc: 'Simulate the connection suddenly dropping'},
+    {id: 'corrupt', icon: Dna, color: 'var(--log-security)', name: 'Corrupt the data', desc: 'Remove fields from the response'},
+    {id: 'attack', icon: Crosshair, color: 'var(--severity-critical)', name: 'Test for security holes', desc: 'Send malicious test data to check input validation'},
 ];
 
 const ERROR_CODE_CHOICES: {code: number; label: string}[] = [
@@ -941,18 +975,21 @@ function RuleCreateWizard({onClose, onCreated}: {
                 {step === 2 && (
                     <div className="wizard-body">
                         <div className="stress-presets wizard-presets">
-                            {EFFECT_CARDS.map(c => (
-                                <button
-                                    type="button"
-                                    key={c.id}
-                                    className={`stress-preset wizard-card${effect === c.id ? ' wizard-card--active' : ''}`}
-                                    onClick={() => setEffect(c.id)}
-                                >
-                                    <span className="stress-preset-icon">{c.icon}</span>
-                                    <span className="stress-preset-name">{c.name}</span>
-                                    <span className="stress-preset-desc">{c.desc}</span>
-                                </button>
-                            ))}
+                            {EFFECT_CARDS.map(c => {
+                                const Icon = c.icon;
+                                return (
+                                    <button
+                                        type="button"
+                                        key={c.id}
+                                        className={`stress-preset wizard-card${effect === c.id ? ' wizard-card--active' : ''}`}
+                                        onClick={() => setEffect(c.id)}
+                                    >
+                                        <span className="stress-preset-icon"><Icon size={24} color={c.color} strokeWidth={1.8} aria-hidden="true" /></span>
+                                        <span className="stress-preset-name">{c.name}</span>
+                                        <span className="stress-preset-desc">{c.desc}</span>
+                                    </button>
+                                );
+                            })}
                         </div>
 
                         {effect === 'slow' && (
@@ -1064,7 +1101,7 @@ function RuleCreateWizard({onClose, onCreated}: {
                             {previewTags.length > 0 && (
                                 <div className="chaos-row-tags">
                                     {previewTags.map(t => (
-                                        <span className="chaos-tag" key={t.kind} title={t.title}>{t.label}</span>
+                                        <ChaosTagPill key={t.kind} tag={t} />
                                     ))}
                                 </div>
                             )}
@@ -1115,7 +1152,8 @@ function stressTone(errorRate: number): StressTone {
 
 interface PresetDef {
     id: PresetId;
-    icon: string;
+    icon: LucideIcon;
+    color: string;
     name: string;
     desc: string;
 }
@@ -1224,9 +1262,9 @@ function StressTest() {
     };
 
     const presets: PresetDef[] = [
-        {id: 'light', icon: '🟢', name: 'Light Load', desc: 'Steady 50 RPS for 30 seconds'},
-        {id: 'viral', icon: '🟡', name: 'Viral Spike', desc: 'Baseline 20 RPS — spikes to 500 RPS immediately for the first 5s of a 20s run, then settles back down'},
-        {id: 'stressbreak', icon: '🔴', name: 'Stress & Break', desc: 'Ramps up traffic until your backend starts struggling — auto-stops at a 50% error rate'},
+        {id: 'light', icon: Zap, color: 'var(--severity-good)', name: 'Light Load', desc: 'Steady 50 RPS for 30 seconds'},
+        {id: 'viral', icon: TrendingUp, color: 'var(--severity-warning)', name: 'Viral Spike', desc: 'Baseline 20 RPS — spikes to 500 RPS immediately for the first 5s of a 20s run, then settles back down'},
+        {id: 'stressbreak', icon: Flame, color: 'var(--severity-critical)', name: 'Stress & Break', desc: 'Ramps up traffic until your backend starts struggling — auto-stops at a 50% error rate'},
     ];
 
     const num = (s: string) => Number(s);
@@ -1261,13 +1299,16 @@ function StressTest() {
                 <div className="stress-title">STRESS TEST — PRESETS</div>
 
                 <div className="stress-presets">
-                    {presets.map(p => (
-                        <button className="stress-preset" key={p.id} onClick={() => launchPreset(p.id)}>
-                            <span className="stress-preset-icon">{p.icon}</span>
-                            <span className="stress-preset-name">{p.name}</span>
-                            <span className="stress-preset-desc">{p.desc}</span>
-                        </button>
-                    ))}
+                    {presets.map(p => {
+                        const Icon = p.icon;
+                        return (
+                            <button className="stress-preset" key={p.id} onClick={() => launchPreset(p.id)}>
+                                <span className="stress-preset-icon"><Icon size={24} color={p.color} strokeWidth={1.8} aria-hidden="true" /></span>
+                                <span className="stress-preset-name">{p.name}</span>
+                                <span className="stress-preset-desc">{p.desc}</span>
+                            </button>
+                        );
+                    })}
                 </div>
 
                 <div className="stress-custom-heading">CUSTOM CONFIGURATION</div>
@@ -1591,19 +1632,26 @@ function SecurityView() {
 
 // A single "smart auto-suggestion" badge on a clean traffic event. Clicking it
 // injects a pre-filled chaos rule via the shared CreateRule binding; the badge
-// mirrors the async outcome inline (Adding… / ✓ Added / ⚠ Failed) so a beginner
-// always knows what happened without leaving the Dashboard.
-function SuggestionBadge({label, state, onClick}: {
+// mirrors the async outcome inline (Adding… / Added / Failed) so a beginner
+// always knows what happened without leaving the Dashboard. The action glyph is
+// the idle icon, replaced by a Check on success and an AlertTriangle on failure.
+function SuggestionBadge({label, state, onClick, icon}: {
     label: string;
     state: {status: 'idle' | 'creating' | 'added' | 'error'; message?: string};
     onClick: () => void;
+    icon: LucideIcon;
 }) {
+    const DisplayedIcon: LucideIcon = state.status === 'added'
+        ? Check
+        : state.status === 'error'
+        ? AlertTriangle
+        : icon;
     const text = state.status === 'creating'
         ? 'Adding…'
         : state.status === 'added'
-        ? '✓ Added'
+        ? 'Added'
         : state.status === 'error'
-        ? '⚠ Failed'
+        ? 'Failed'
         : label;
     const cls = ['suggestion-badge']
         .concat(state.status === 'creating' ? ['suggestion-badge--creating'] : [])
@@ -1612,6 +1660,7 @@ function SuggestionBadge({label, state, onClick}: {
         .join(' ');
     return (
         <button className={cls} onClick={onClick} disabled={state.status === 'creating'} title={state.message}>
+            <DisplayedIcon size={12} strokeWidth={2.5} aria-hidden="true" />
             {text}
         </button>
     );
@@ -2028,7 +2077,7 @@ function App() {
                                         </div>
                                         <div className="overview-name">{session.label}</div>
                                         <div className="overview-port">port {session.port}</div>
-                                        <div className="overview-hint">Open {session.label} →</div>
+                                        <div className="overview-hint">Open {session.label} <ArrowRight size={14} strokeWidth={2.2} aria-hidden="true" /></div>
                                     </button>
                                 );
                             })}
@@ -2084,12 +2133,14 @@ function App() {
                                             {suggest && evt && (
                                                 <span className="log-suggestions">
                                                     <SuggestionBadge
-                                                        label="⚡ +3s Latency"
+                                                        label="+3s Latency"
+                                                        icon={Zap}
                                                         state={sug?.latency ?? {status: 'idle'}}
                                                         onClick={() => applySuggestion(e.id, evt, 'latency')}
                                                     />
                                                     <SuggestionBadge
-                                                        label="🔥 +500 Error"
+                                                        label="+500 Error"
+                                                        icon={Flame}
                                                         state={sug?.error ?? {status: 'idle'}}
                                                         onClick={() => applySuggestion(e.id, evt, 'error')}
                                                     />

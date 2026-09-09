@@ -254,6 +254,9 @@
 }
 
 .overview-hint {
+    display: flex;
+    align-items: center;
+    gap: 5px;
     font-family: var(--mono);
     font-size: 11px;
     letter-spacing: 0.10em;
@@ -522,6 +525,9 @@
 }
 
 .suggestion-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     background: transparent;
     border: 1px solid var(--border);
     border-radius: 10px;
@@ -1040,6 +1046,9 @@
 }
 
 .chaos-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     font-family: var(--mono);
     font-size: 11px;
     letter-spacing: 0.08em;
