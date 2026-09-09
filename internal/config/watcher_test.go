@@ -73,6 +73,35 @@ func TestHotReloadPicksUpValidChanges(t *testing.T) {
 	}
 }
 
+func TestHotReloadPicksUpAtomicRename(t *testing.T) {
+	path := writeConfig(t, rulesYAML(2))
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v, want nil", err)
+	}
+	defer s.Close()
+
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		t.Fatalf("os.CreateTemp() error = %v", err)
+	}
+	if _, err := tmp.Write([]byte(rulesYAML(4))); err != nil {
+		t.Fatalf("tmp.Write() error = %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatalf("tmp.Close() error = %v", err)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		t.Fatalf("os.Rename() error = %v", err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	if got := len(s.Current().Rules); got != 4 {
+		t.Errorf("rule count after atomic rename = %d, want 4", got)
+	}
+}
+
 func TestHotReloadIgnoresInvalidChanges(t *testing.T) {
 	path := writeConfig(t, rulesYAML(2))
 	s, err := NewStore(path)

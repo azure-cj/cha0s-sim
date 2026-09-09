@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
@@ -148,10 +149,68 @@ search:
 	newLine = append(newLine, line[colBytes+len(token):]...)
 	lines[lineIdx] = newLine
 
-	if err := os.WriteFile(s.path, bytes.Join(lines, []byte{'\n'}), 0o644); err != nil {
+	if err := writeFileAtomic(s.path, bytes.Join(lines, []byte{'\n'}), 0o644); err != nil {
 		return false, fmt.Errorf("write %q: %w", s.path, err)
 	}
 	return true, nil
+}
+
+// renameOver is os.Rename with a short retry loop. Windows' MoveFileEx replace
+// can transiently fail with a sharing violation ("Access is denied") when two
+// writers replace the same target back-to-back or a concurrent reader has the
+// file open; a couple of retries make the read-copy-modify-publish path under
+// concurrency reliably durable while still reporting a true error for hard
+// failures (e.g. a read-only target).
+func renameOver(src, dst string) error {
+	const attempts = 5
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = os.Rename(src, dst); err == nil {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return err
+}
+
+// writeFileAtomic writes data to path via a same-directory temp file + rename,
+// so the watched config file is never read mid-write: readers (including the
+// hot-reload watcher) always observe either the old complete file or the new
+// complete file — never a truncated/partial one. This eliminates the reload
+// race where a concurrent toggle could be picked up as an empty config.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp file in %q: %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if tmpName != "" {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	// Sync before rename so the new file is durable before it becomes visible.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := renameOver(tmpName, path); err != nil {
+		return fmt.Errorf("rename temp over %q: %w", path, err)
+	}
+	tmpName = "" // renamed into place; nothing to clean up
+	return nil
 }
 
 // byteOffsetAtColumn converts a zero-based character column (as used to land on
@@ -335,7 +394,7 @@ func (s *Store) persistAddRule(rule *Rule) (bool, error) {
 		return false, fmt.Errorf("refusing to persist rule %q: appended YAML failed verification: %w", rule.Name, err)
 	}
 
-	if err := os.WriteFile(s.path, newLines, 0o644); err != nil {
+	if err := writeFileAtomic(s.path, newLines, 0o644); err != nil {
 		return false, fmt.Errorf("write %q: %w", s.path, err)
 	}
 	return true, nil
@@ -361,7 +420,7 @@ func (s *Store) createConfigWithRule(rule *Rule) (bool, error) {
 			return false, fmt.Errorf("create config directory %q: %w", dir, err)
 		}
 	}
-	if err := os.WriteFile(s.path, out.Bytes(), 0o644); err != nil {
+	if err := writeFileAtomic(s.path, out.Bytes(), 0o644); err != nil {
 		return false, fmt.Errorf("write %q: %w", s.path, err)
 	}
 	return true, nil

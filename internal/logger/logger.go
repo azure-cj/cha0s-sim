@@ -30,6 +30,11 @@ func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 
 func Middleware(verbose bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if !verbose {
+			next.ServeHTTP(w, req)
+			return
+		}
+
 		start := time.Now()
 		recorder := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(recorder, req)
@@ -51,17 +56,18 @@ func Middleware(verbose bool, next http.Handler) http.Handler {
 
 		statusColor.Printf("%s %s -> %d (%s)\n", req.Method, req.URL.Path, recorder.statusCode, elapsed)
 
-		if verbose {
-			headerList := ""
-			first := true
-			for name := range req.Header {
-				if !first {
-					headerList += ", "
-				}
-				headerList += name
-				first = false
+		// Headers only on top of verbose; the same flag now gates the access
+		// line itself so a quiet CLI stays quiet (security findings are the
+		// CLI's always-on output, printed by the event sink, not here).
+		headerList := ""
+		first := true
+		for name := range req.Header {
+			if !first {
+				headerList += ", "
 			}
-			fmt.Printf("  headers: %s | content-length: %d\n", headerList, req.ContentLength)
+			headerList += name
+			first = false
 		}
+		fmt.Printf("  headers: %s | content-length: %d\n", headerList, req.ContentLength)
 	})
 }
