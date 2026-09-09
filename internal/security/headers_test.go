@@ -2,6 +2,7 @@ package security
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -40,6 +41,81 @@ func TestHeaderValidatorMissingHeadersDetected(t *testing.T) {
 		if f.FindingSeverity != severityWarning {
 			t.Errorf("finding for %s has severity %q, want %q", f.Location, f.FindingSeverity, severityWarning)
 		}
+		if f.Remediation == "" {
+			t.Errorf("finding for %s has empty Remediation", f.Location)
+		}
+	}
+}
+
+// findingFor scans a response with the default validator and returns the first
+// finding matching the given category and header name (plus whether it exists).
+func findingFor(headers map[string]string, category, name string) (Finding, bool) {
+	if headers == nil {
+		headers = map[string]string{}
+	}
+	findings := NewDefaultHeaderValidator().Scan(makeResponse(headers))
+	for _, f := range findings {
+		if f.FindingCategory == category && f.Location == "header:"+name {
+			return f, true
+		}
+	}
+	return Finding{}, false
+}
+
+func TestHeaderValidatorRemediationForMissingHeaders(t *testing.T) {
+	cases := []struct {
+		header        string
+		expectPhrases []string
+	}{
+		{"Content-Security-Policy", []string{"Content-Security-Policy", "default-src 'self'"}},
+		{"Strict-Transport-Security", []string{"Strict-Transport-Security", "max-age=31536000"}},
+		{"X-Frame-Options", []string{"X-Frame-Options", "DENY"}},
+		{"X-Content-Type-Options", []string{"X-Content-Type-Options", "nosniff"}},
+	}
+	for _, tc := range cases {
+		t.Run("missing-"+tc.header, func(t *testing.T) {
+			f, ok := findingFor(nil, findingMissingHeader, tc.header)
+			if !ok {
+				t.Fatalf("no %s finding for missing %s", findingMissingHeader, tc.header)
+			}
+			if f.Remediation == "" {
+				t.Fatalf("empty Remediation for missing %s", tc.header)
+			}
+			for _, p := range tc.expectPhrases {
+				if !strings.Contains(f.Remediation, p) {
+					t.Errorf("remediation %q missing expected phrase %q", f.Remediation, p)
+				}
+			}
+		})
+	}
+}
+
+func TestHeaderValidatorRemediationForWeakHeaders(t *testing.T) {
+	cases := []struct {
+		header        string
+		weakValue     string
+		expectPhrases []string
+	}{
+		{"Content-Security-Policy", "upgrade-insecure-requests", []string{"Content-Security-Policy", "default-src 'self'"}},
+		{"Strict-Transport-Security", "preload", []string{"Strict-Transport-Security", "max-age=31536000"}},
+		{"X-Frame-Options", "ALLOW-FROM https://example.com", []string{"X-Frame-Options", "DENY"}},
+		{"X-Content-Type-Options", "sniff", []string{"X-Content-Type-Options", "nosniff"}},
+	}
+	for _, tc := range cases {
+		t.Run("weak-"+tc.header, func(t *testing.T) {
+			f, ok := findingFor(map[string]string{tc.header: tc.weakValue}, findingWeakHeader, tc.header)
+			if !ok {
+				t.Fatalf("no %s finding for weak %s", findingWeakHeader, tc.header)
+			}
+			if f.Remediation == "" {
+				t.Fatalf("empty Remediation for weak %s", tc.header)
+			}
+			for _, p := range tc.expectPhrases {
+				if !strings.Contains(f.Remediation, p) {
+					t.Errorf("remediation %q missing expected phrase %q", f.Remediation, p)
+				}
+			}
+		})
 	}
 }
 
@@ -96,6 +172,11 @@ func TestHeaderValidatorCustomPolicy(t *testing.T) {
 	findings := v.Scan(resp)
 	if !hasFinding(findings, findingWeakHeader, "X-Custom-Broken") {
 		t.Errorf("custom policy weakness not detected; got %+v", findings)
+	}
+	for _, f := range findings {
+		if f.FindingCategory == findingWeakHeader && f.Remediation == "" {
+			t.Errorf("custom policy weak finding has empty Remediation: %+v", f)
+		}
 	}
 
 	okResp := makeResponse(map[string]string{"X-Custom-Broken": "must-be-here"})

@@ -181,6 +181,48 @@ func TestSecretScannerMultipleDistinctPatterns(t *testing.T) {
 	}
 }
 
+func TestSecretScannerRemediationIsSpecific(t *testing.T) {
+	cases := []struct {
+		name     string
+		headers  map[string]string
+		body     string
+		location string
+		phrases  []string
+	}{
+		{"aws-access-key-id", nil, `{"awsKey":"` + fixtureAWSAccessKeyID + `"}`, "body", []string{"Rotate", "IAM console"}},
+		{"aws-secret-access-key", nil, `{"secret":"aws_secret_access_key = "` + fixtureAWSSecret + `""}`, "body", []string{"Rotate", "IAM console"}},
+		{"generic-bearer-token", map[string]string{"Authorization": "Bearer " + fixtureBearerToken}, "ok", "header:Authorization", []string{"authentication token", "Authorization header"}},
+		{"jwt", nil, `{"token":"` + fixtureJWT + `"}`, "body", []string{"authentication token", "not embedded in JSON response bodies"}},
+		{"private-key", nil, fixturePrivateKey, "body", []string{"Rotate", "private key"}},
+		{"api-key-assignment", nil, `"api_key":"hunter2hunter2hunter2hunter2"`, "body", []string{"API key", "rotate"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := NewSecretScanner().Scan(makeBodyResponse(tc.headers, tc.body))
+			if len(findings) == 0 {
+				t.Fatalf("expected findings, got none")
+			}
+			var f *Finding
+			for i := range findings {
+				if findings[i].Location == tc.location {
+					f = &findings[i]
+				}
+			}
+			if f == nil {
+				t.Fatalf("no finding at location %q; got %+v", tc.location, findings)
+			}
+			if f.Remediation == "" {
+				t.Fatalf("empty Remediation for %s", f.Detail)
+			}
+			for _, p := range tc.phrases {
+				if !strings.Contains(f.Remediation, p) {
+					t.Errorf("remediation %q missing expected phrase %q", f.Remediation, p)
+				}
+			}
+		})
+	}
+}
+
 func TestSecretScannerFindingsNeverLeakSecrets(t *testing.T) {
 	// SAFETY REQUIREMENT: most important test in this package. For every
 	// finding produced by every realistic input, the actual secret substrings
@@ -218,6 +260,9 @@ func TestSecretScannerFindingsNeverLeakSecrets(t *testing.T) {
 					}
 					if strings.Contains(f.Location, secret) {
 						t.Errorf("Finding.Location %q leaks secret %q", f.Location, secret)
+					}
+					if strings.Contains(f.Remediation, secret) {
+						t.Errorf("Finding.Remediation %q leaks secret %q", f.Remediation, secret)
 					}
 				}
 			}

@@ -18,6 +18,11 @@ type Finding struct {
 	Detail          string
 	FindingSeverity string // "info", "warning", or "critical"
 	Location        string // e.g. "header:Content-Security-Policy"
+	// Remediation is a short, concrete, actionable instruction for fixing the
+	// finding — what a senior engineer would tell a junior exactly what to
+	// type. It is pattern/header-level guidance and NEVER includes any value
+	// discovered in the traffic (same no-leak rule as Detail/Location).
+	Remediation string `json:"remediation"`
 	// SessionName identifies which named session ("chaos"/"security") produced
 	// this finding. It is stamped by the proxy's scanner runner (RunScanners)
 	// from the request context; it is empty when the finding did not originate
@@ -25,6 +30,9 @@ type Finding struct {
 	SessionName string `json:"sessionName"`
 }
 
+// Category/Summary/Severity satisfy platform.Reportable. Summary deliberately
+// stays a compact WHAT log line (the Detail); Remediation is a separate field
+// surfaced by the UI alongside the finding, not folded into the summary.
 func (f Finding) Category() string { return f.FindingCategory }
 func (f Finding) Summary() string  { return f.Detail }
 func (f Finding) Severity() string { return f.FindingSeverity }

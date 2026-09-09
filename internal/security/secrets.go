@@ -43,6 +43,19 @@ var secretPatternDescriptions = map[string]string{
 	"generic_api_key_assignment": "Detected API key / secret assignment",
 }
 
+// secretPatternRemediations maps a pattern name to the HOW-TO-FIX text used in
+// finding Remediation. Like Description, remediation is generic pattern-level
+// advice and NEVER references the specific leaked value — the fix is the same
+// regardless of which credential was exposed.
+var secretPatternRemediations = map[string]string{
+	"aws_access_key_id": "Rotate this AWS key immediately in the IAM console, then ensure it's never returned in API responses — check why this endpoint includes credential data in its output.",
+	"aws_secret_access_key": "Rotate this AWS secret immediately in the IAM console, then check why this endpoint includes credential data in its output.",
+	"generic_bearer_token": "This endpoint is echoing an authentication token in its response. Review why — tokens should be set via secure cookies or the Authorization header, not embedded in JSON response bodies.",
+	"jwt": "This endpoint is echoing an authentication token in its response. Review why — tokens should be set via secure cookies or the Authorization header, not embedded in JSON response bodies.",
+	"private_key_header": "A private key is present in this response. Rotate the key immediately and audit why your backend is serving private key material over HTTP.",
+	"generic_api_key_assignment": "An API key or secret appears in this response. Verify it's not a real credential; if it is, rotate it and check your backend's response serialization for accidental credential exposure.",
+}
+
 const (
 	// findingLeakedSecret is the FindingCategory used for every SecretScanner
 	// finding.
@@ -85,11 +98,16 @@ func (s *SecretScanner) Scan(resp *http.Response) []Finding {
 			if detail == "" {
 				detail = "Detected leaked secret pattern " + p.name
 			}
+			remediation := secretPatternRemediations[p.name]
+			if remediation == "" {
+				remediation = "Review why " + location + " contains credential data and remove or encrypt it before it leaves the backend."
+			}
 			findings = append(findings, Finding{
 				FindingCategory: findingLeakedSecret,
 				Detail:          detail + " in " + location,
 				FindingSeverity: p.severity,
 				Location:        location,
+				Remediation:     remediation,
 			})
 		}
 	}
