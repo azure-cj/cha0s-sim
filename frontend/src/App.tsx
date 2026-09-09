@@ -3,6 +3,7 @@ import {
     AlertTriangle,
     ArrowRight,
     Check,
+    ChevronDown,
     Crosshair,
     Dna,
     Flame,
@@ -49,6 +50,7 @@ interface FindingPayload {
     Detail: string;
     FindingSeverity: string;
     Location: string;
+    remediation: string; // 'how to fix' guidance emitted by the backend (json:"remediation")
     sessionName: string;
 }
 
@@ -70,6 +72,7 @@ interface LogEntry {
     severity: Severity;
     summary: string;
     sessionName: string; // 'chaos', 'security', or '' for CLI-originated events
+    remediation?: string; // 'how to fix' guidance, only set on security-finding entries that have one
     event?: TrafficEventPayload; // present only for traffic entries (not security findings)
     finding?: FindingPayload;    // present only for security-finding entries
 }
@@ -1507,6 +1510,62 @@ function StressTest() {
     );
 }
 
+// A security-finding log row with an expandable "How to fix" detail. Collapsed
+// by default so the feed stays scannable at a glance; clicking the row (or
+// pressing Enter/Space while focused) reveals the remediation text beneath the
+// one-line summary. Rows without remediation (defensive: an older backend) stay
+// plain and non-interactive. Shared by the Security tab and the Dashboard's
+// combined log so the expand behavior and markup stay identical; the Dashboard
+// opts into the per-session badge via showSession.
+function FindingLogRow({entry, showSession = false}: {entry: LogEntry; showSession?: boolean}) {
+    const [expanded, setExpanded] = useState(false);
+    const hasFix = !!entry.remediation;
+    const toggle = () => {
+        if (hasFix) setExpanded(v => !v);
+    };
+    const cls = ['log-entry', 'log-entry--finding']
+        .concat(hasFix ? ['log-entry--expandable'] : [])
+        .concat(expanded ? ['log-entry--expanded'] : [])
+        .join(' ');
+    return (
+        <div
+            className={cls}
+            onClick={toggle}
+            role={hasFix ? 'button' : undefined}
+            tabIndex={hasFix ? 0 : undefined}
+            aria-expanded={hasFix ? expanded : undefined}
+            onKeyDown={e => {
+                if (!hasFix) return;
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    toggle();
+                }
+            }}
+            title={hasFix ? (expanded ? 'Hide how to fix this finding' : 'Show how to fix this finding') : undefined}
+        >
+            <span className="log-time">{entry.time}</span>
+            {showSession && entry.sessionName && (
+                <span className={`log-session log-session--${entry.sessionName}`}>
+                    {entry.sessionName === CHAOS_SESSION_NAME ? 'CHAOS' : 'SECURITY'}
+                </span>
+            )}
+            <span className={`log-dot log-dot--${entry.severity}`} />
+            <span className="log-summary">{entry.summary}</span>
+            {hasFix && (
+                <span className={`log-chevron${expanded ? ' log-chevron--open' : ''}`} aria-hidden="true">
+                    <ChevronDown size={14} strokeWidth={2} />
+                </span>
+            )}
+            {expanded && hasFix && (
+                <div className="log-remediation">
+                    <span className="log-remediation-label">HOW TO FIX</span>
+                    <div className="log-remediation-text">{entry.remediation}</div>
+                </div>
+            )}
+        </div>
+    );
+}
+
 // SecurityView is a dedicated, self-contained view for the "security" session
 // (an independent proxy session that runs ONLY the passive scanners, isolated
 // from the chaos session). It has its own Start/Stop controls, its own status
@@ -1553,6 +1612,7 @@ function SecurityView() {
                 severity: normalizeSeverity(f.FindingSeverity),
                 summary: `${f.FindingCategory}: ${f.Detail}`,
                 sessionName: SECURITY_SESSION_NAME,
+                remediation: f.remediation,
             };
             setFindings(prev => [entry, ...prev].slice(0, 200));
         });
@@ -1618,11 +1678,7 @@ function SecurityView() {
                         </div>
                     )}
                     {findings.map(e => (
-                        <div className="log-entry" key={e.id}>
-                            <span className="log-time">{e.time}</span>
-                            <span className={`log-dot log-dot--${e.severity}`} />
-                            <span className="log-summary">{e.summary}</span>
-                        </div>
+                        <FindingLogRow entry={e} key={e.id} />
                     ))}
                 </div>
             </div>
@@ -1864,6 +1920,7 @@ function App() {
                 severity: normalizeSeverity(f.FindingSeverity),
                 summary: `${f.FindingCategory}: ${f.Detail}`,
                 sessionName: f.sessionName || '',
+                remediation: f.remediation,
                 finding: f,
             });
         });
@@ -2112,6 +2169,9 @@ function App() {
                                     </div>
                                 )}
                                 {entries.filter(e => logFilter === 'all' || e.sessionName === logFilter).map(e => {
+                                    if (e.finding) {
+                                        return <FindingLogRow entry={e} showSession key={e.id} />;
+                                    }
                                     const evt = e.event;
                                     const isCopied = copiedId === e.id;
                                     // Suggest chaos only for clean traffic events

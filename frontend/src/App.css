@@ -515,6 +515,68 @@
     background: rgba(234, 88, 12, 0.08);
 }
 
+/* expandable security-finding rows — collapsed summary, remediation on demand */
+.log-entry--finding {
+    flex-wrap: wrap;
+}
+
+.log-entry--expandable {
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background 120ms ease;
+}
+
+.log-entry--expandable:hover {
+    background: rgba(34, 211, 238, 0.05);
+}
+
+.log-entry--expandable:focus-visible {
+    outline: 1px solid var(--accent-cyan);
+    outline-offset: -1px;
+}
+
+.log-entry--expanded {
+    background: rgba(234, 88, 12, 0.04);
+}
+
+.log-chevron {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-dim);
+    transition: transform 150ms ease, color 150ms ease;
+}
+
+.log-chevron--open {
+    transform: rotate(180deg);
+    color: var(--accent-cyan);
+}
+
+.log-remediation {
+    flex: 0 0 100%;
+    margin-top: 2px;
+    padding: 8px 10px;
+    background: rgba(15, 23, 32, 0.6);
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--log-security);
+    border-radius: 4px;
+}
+
+.log-remediation-label {
+    display: block;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+}
+
+.log-remediation-text {
+    color: var(--text-primary);
+    line-height: 1.5;
+    word-break: break-word;
+}
+
 /* smart auto-suggestion badges on clean traffic events */
 .log-suggestions {
     flex: 0 0 auto;
