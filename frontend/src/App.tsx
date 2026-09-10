@@ -87,7 +87,7 @@ interface SuggestionState {
 
 type SuggestionAction = 'latency' | 'error';
 
-type View = 'dashboard' | 'chaos' | 'stress' | 'security' | 'settings';
+type View = 'dashboard' | 'chaos' | 'stress' | 'security' | 'settings' | 'help';
 
 // Fixed session ports/names. MUST stay in sync with the backend's
 // sessionPorts map in app.go (sessionChaos -> 8081, sessionSecurity -> 8082).
@@ -1850,6 +1850,137 @@ function ScorecardModal({stats, onClose, onCopy, copied, stressRunning, stressCo
     );
 }
 
+// ---------- help / faq ----------
+
+// FAQ answers are written in the same plain, no-jargon register as the rest of
+// the UI and were verified against the app's actual behavior when written.
+const HELP_FAQS: {q: string; a: string}[] = [
+    {
+        q: 'Do I need to write a config file?',
+        a: "No. Until a chaos.yaml exists the proxy runs in passthrough mode — it forwards traffic cleanly without touching it. Create rules with the Rule Wizard or by clicking a suggestion badge, and the app writes the config file for you. Editing the YAML by hand is only needed for advanced options the wizard doesn't offer, like regex paths or custom delay jitter.",
+    },
+    {
+        q: 'What happens when I turn off a rule?',
+        a: "It stops firing immediately for new traffic, and the change is saved to your config file. If the file couldn't be written (rare), you'll see a soft amber warning and the change only sticks for this session.",
+    },
+    {
+        q: 'Can I run Chaos and Security at the same time?',
+        a: "Yes. They are independent sessions on different ports (8081 for Chaos, 8082 for Security) that don't interfere with each other.",
+    },
+    {
+        q: "Why don't my chaos rules ever fire?",
+        a: "A rule only fires when it's enabled AND has a frequency set — a rule showing 'Never triggers' (0% error rate) never fires. Then make sure the request's path and method match the rule, and that traffic is actually going through the session's port (8081). Low-frequency rules (about 1 in 20) can also just miss small amounts of traffic.",
+    },
+    {
+        q: 'Does this tool store or transmit my data anywhere?',
+        a: "No. Everything runs locally on your machine — there's no telemetry and nothing is sent externally. The only outbound traffic is the copies of your requests the proxy forwards to the backend you configured, and stress-test traffic to the target you set.",
+    },
+    {
+        q: 'Why is my "Copy as cURL" command missing headers or a request body?',
+        a: "Known, documented limitation: traffic events only capture the method and URL path — not headers, body, or query string. The copied command is accurate for that method + URL, but it can't reconstruct the full request.",
+    },
+    {
+        q: 'What does the Scorecard\'s "chaos hit rate" mean?',
+        a: "The share of requests a chaos effect actually landed on — a 20% hit rate means 2 in 10 of the requests shown got slowed, errored, or corrupted. It's calculated from the last 200 events in the live feed, not your entire session.",
+    },
+    {
+        q: 'Does Stress Test use the same sessions?',
+        a: "No. Stress Test talks directly to the target URL from Settings and creates its own traffic, so it can run at the same time as Chaos and Security without affecting them or their ports.",
+    },
+];
+
+// The FAQ rows reuse the exact expandable-row pattern from the "HOW TO FIX"
+// remediation rows (same ChevronDown chevron that rotates when opened).
+function FaqItem({question, answer}: {question: string; answer: string}) {
+    const [open, setOpen] = useState(false);
+    return (
+        <div className={`faq-item${open ? ' faq-item--open' : ''}`}>
+            <button className="faq-question" onClick={() => setOpen(v => !v)} aria-expanded={open}>
+                <span className="faq-question-text">{question}</span>
+                <span className={`log-chevron${open ? ' log-chevron--open' : ''}`} aria-hidden="true">
+                    <ChevronDown size={14} strokeWidth={2} />
+                </span>
+            </button>
+            {open && <div className="faq-answer">{answer}</div>}
+        </div>
+    );
+}
+
+// The Help page is pure documentation: it reuses EFFECT_CARDS (the same
+// established Chaos effect copy the Rule Wizard shows) so Help never drifts
+// from what the app itself says.
+function HelpPage() {
+    return (
+        <div className="help">
+            <div className="help-title">HELP & FAQ</div>
+
+            <section className="help-section">
+                <h2 className="help-section-title">Getting Started</h2>
+                <p className="help-lead">
+                    cha0s;sim sits between your frontend and your backend. Four steps and you're seeing it work:
+                </p>
+                <ol className="help-steps">
+                    <li className="help-step"><span className="help-step-num">1</span>Open <strong>Settings</strong> and set the Target URL to your backend (e.g. http://localhost:3000).</li>
+                    <li className="help-step"><span className="help-step-num">2</span>Go to <strong>Chaos Engine</strong> or <strong>Security</strong> and hit Start — that opens a small proxy on port 8081 or 8082.</li>
+                    <li className="help-step"><span className="help-step-num">3</span>Send requests through that port (e.g. http://localhost:8081/api/users) from your app, the browser, Postman, or curl.</li>
+                    <li className="help-step"><span className="help-step-num">4</span>Watch the <strong>Dashboard</strong>: traffic fills the live event log, and with a rule enabled — or a suggestion badge clicked — you'll see chaos and security findings happen in real time.</li>
+                </ol>
+            </section>
+
+            <section className="help-section">
+                <h2 className="help-section-title">What's the difference between Chaos and Security?</h2>
+                <p className="help-panel">
+                    <strong>Chaos</strong> actively breaks your traffic on purpose — adding delay, faking errors, dropping connections, corrupting data — to see how your frontend handles failure.{' '}
+                    <strong>Security</strong> leaves traffic alone and passively watches responses for missing security headers and leaked secrets. They run independently and can both be on at once.
+                </p>
+            </section>
+
+            <section className="help-section">
+                <h2 className="help-section-title">Chaos Effects Explained</h2>
+                <p className="help-lead">Each rule applies one effect. These are the same descriptions the Chaos Engine uses.</p>
+                <div className="help-grid">
+                    {EFFECT_CARDS.map(c => {
+                        const Icon = c.icon;
+                        return (
+                            <div className="help-card" key={c.id}>
+                                <div className="help-card-head">
+                                    <span className="help-card-icon"><Icon size={18} color={c.color} strokeWidth={1.8} aria-hidden="true" /></span>
+                                    <span className="help-card-name">{c.name}</span>
+                                </div>
+                                <div className="help-card-desc">{c.desc}</div>
+                            </div>
+                        );
+                    })}
+                </div>
+                <p className="help-note">
+                    Frequency decides how often an enabled rule fires — from every matching request down to about 1 in 20. A rule with no frequency never fires.
+                </p>
+            </section>
+
+            <section className="help-section">
+                <h2 className="help-section-title">Security Checks Explained</h2>
+                <p className="help-lead">The Security session watches your backend's responses for the following, without touching your traffic.</p>
+                <div className="help-list">
+                    <div className="help-row"><strong>Content-Security-Policy</strong><span>Controls which scripts and resources your pages are allowed to load; flagged when missing or weak.</span></div>
+                    <div className="help-row"><strong>Strict-Transport-Security (HSTS)</strong><span>Forces browsers to use HTTPS only; flagged when missing or lacking max-age.</span></div>
+                    <div className="help-row"><strong>X-Frame-Options</strong><span>Stops other sites embedding your page (clickjacking); must be DENY or SAMEORIGIN.</span></div>
+                    <div className="help-row"><strong>X-Content-Type-Options</strong><span>Stops browsers from guessing a response's file type; must be nosniff.</span></div>
+                    <div className="help-row"><strong>Leaked credentials</strong><span>Scans responses for exposed secrets — AWS access keys, private keys, JWTs, bearer tokens, API-key assignments — and flags them without ever printing the secret itself.</span></div>
+                </div>
+            </section>
+
+            <section className="help-section">
+                <h2 className="help-section-title">Frequently Asked Questions</h2>
+                <div className="faq">
+                    {HELP_FAQS.map(f => (
+                        <FaqItem key={f.q} question={f.q} answer={f.a} />
+                    ))}
+                </div>
+            </section>
+        </div>
+    );
+}
+
 function App() {
     const [booted, setBooted] = useState(false);
     const [fading, setFading] = useState(false);
@@ -2086,6 +2217,10 @@ function App() {
                             refresh();
                         }}
                     >SETTINGS</button>
+                    <button
+                        className={`nav-item${view === 'help' ? ' nav-item--active' : ''}`}
+                        onClick={() => setView('help')}
+                    >HELP</button>
                 </nav>
                 <div className="session-indicators">
                     {SESSION_OVERVIEW.map(session => {
@@ -2112,6 +2247,7 @@ function App() {
                         {view === 'security' && 'SECURITY'}
                         {view === 'stress' && 'STRESS TEST'}
                         {view === 'settings' && 'SETTINGS'}
+                        {view === 'help' && 'HELP'}
                     </div>
                 </header>
 
@@ -2238,6 +2374,10 @@ function App() {
 
                 {view === 'settings' && (
                     <SettingsForm />
+                )}
+
+                {view === 'help' && (
+                    <HelpPage />
                 )}
             </main>
             {scorecardOpen && (
