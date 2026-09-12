@@ -68,6 +68,7 @@ interface StressUpdatePayload {
     p95Ms: number;
     p99Ms: number;
     final: boolean;
+    errorCategories?: Record<string, number>; // absent when no errors recorded (omitempty on the wire)
 }
 
 interface LogEntry {
@@ -1173,7 +1174,10 @@ const GAUGE_ARC_270 = 'M 26.06 93.94 A 48 48 0 1 1 93.94 93.94';
 
 // SVG radial gauge: a 270-degree dial drawn with stroke-dasharray/offset on a
 // normalized path. The value text sits centered inside the arc (the reference
-// dashboard's "big number + label below" dial pattern).
+// dashboard's "big number + label below" dial pattern). The center numbers are
+// ALWAYS --text-primary regardless of the arc color: the ring's accent/severity
+// color drives only the stroke, never the text fill, so the value never turns
+// dark/illegible against a saturated arc.
 function RadialGauge({value, min, max, label, color, display}: {
     value: number;
     min: number;
@@ -1196,7 +1200,7 @@ function RadialGauge({value, min, max, label, color, display}: {
                     strokeLinecap="round"
                     style={{stroke: color, strokeDasharray: 100, strokeDashoffset: dash}}
                 />
-                <text x="60" y="56" className="radial-value" style={{fill: color}} textAnchor="middle">{display}</text>
+                <text x="60" y="56" className="radial-value" textAnchor="middle">{display}</text>
                 <text x="60" y="76" className="radial-label" textAnchor="middle">{label}</text>
             </svg>
         </div>
@@ -1204,7 +1208,8 @@ function RadialGauge({value, min, max, label, color, display}: {
 }
 
 // SVG radial ring: a full-circle 0-100% progress ring (stroke-dasharray/offset
-// on a pathLength-normalized circle), with the percentage centered inside.
+// on a pathLength-normalized circle), with the percentage centered inside. Same
+// contrast rule as the gauge: the color prop colors the stroke only.
 function RadialRing({percentage, label, color, display}: {
     percentage: number;
     label: string;
@@ -1228,11 +1233,35 @@ function RadialRing({percentage, label, color, display}: {
                     fill="none"
                     style={{stroke: color, strokeDasharray: 100, strokeDashoffset: dash}}
                 />
-                <text x="60" y="54" className="radial-value" style={{fill: color}} textAnchor="middle">{display}</text>
+                <text x="60" y="54" className="radial-value" textAnchor="middle">{display}</text>
                 <text x="60" y="72" className="radial-label" textAnchor="middle">{label}</text>
             </svg>
         </div>
     );
+}
+
+// Humanize a backend error-category label for the breakdown list:
+// "connection_refused" -> "Connection Refused", "status_503" -> "503 Service
+// Unavailable" (with the standard HTTP reason phrase), "status_599" -> "Status 599".
+const HTTP_STATUS_REASONS: Record<number, string> = {
+    500: 'Internal Server Error',
+    501: 'Not Implemented',
+    502: 'Bad Gateway',
+    503: 'Service Unavailable',
+    504: 'Gateway Timeout',
+    505: 'HTTP Version Not Supported',
+    507: 'Insufficient Storage',
+    508: 'Loop Detected',
+    510: 'Not Extended',
+    511: 'Network Authentication Required',
+};
+function humanizeCategory(cat: string): string {
+    if (cat.startsWith('status_')) {
+        const code = Number(cat.slice('status_'.length));
+        const reason = HTTP_STATUS_REASONS[code];
+        return reason ? `${code} ${reason}` : `Status ${code}`;
+    }
+    return cat.split('_').map(w => (w ? w.charAt(0).toUpperCase() + w.slice(1) : w)).join(' ');
 }
 
 interface PresetDef {
@@ -1522,6 +1551,13 @@ function StressTest() {
     // never clips a legitimate spike (e.g. Viral Spike's 500 RPS vs 20 target).
     const rpsMax = Math.max(...history.map(h => h.rps), targetRpsRef.current, 1) * 1.1;
     const errPct = Math.min(100, errorRate * 100);
+    // Error category breakdown: only when a live breakdown actually exists
+    // (older backends and zero-error runs omit errorCategories entirely). Sorted
+    // by count descending, most frequent failure first.
+    const errorCats: [string, number][] | null =
+        latest && errorRate > 0 && latest.errorCategories
+            ? Object.entries(latest.errorCategories).sort((a, b) => b[1] - a[1])
+            : null;
 
     const pctCards = [
         {label: 'p50', value: latest ? `${latest.p50Ms}ms` : '—', note: 'Half of requests are this fast or faster'},
@@ -1564,6 +1600,17 @@ function StressTest() {
                         display={`${Math.round(errorRate * 100)}%`}
                     />
                 </div>
+                {errorCats && errorCats.length > 0 && (
+                    <div className="stress-cats">
+                        <div className="stress-cats-head">ERROR BREAKDOWN</div>
+                        {errorCats.map(([name, count]) => (
+                            <div className="stress-cat-row" key={name}>
+                                <span className="stress-cat-name">{humanizeCategory(name)}</span>
+                                <span className="stress-cat-count">{count}</span>
+                            </div>
+                        ))}
+                    </div>
+                )}
                 <div className="stress-feed-meta">
                     Live trace — last {history.length} update{history.length === 1 ? '' : 's'} ·{' '}
                     {latest ? `${latest.totalRequests} requests · ${latest.totalErrors} errors` : 'waiting for data…'}

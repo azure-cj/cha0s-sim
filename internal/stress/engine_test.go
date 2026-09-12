@@ -2,10 +2,12 @@ package stress
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -87,6 +89,119 @@ func TestEngineRunTracksSimulatedErrors(t *testing.T) {
 	}
 	if snap.ErrorRate <= 0 || snap.ErrorRate > 1 {
 		t.Errorf("ErrorRate = %v, want within (0,1]", snap.ErrorRate)
+	}
+	// Every 500 response is a 5xx status, so every error must carry the
+	// status_500 category (no transport errors occur against the fake server).
+	if snap.ErrorCategories["status_500"] == 0 {
+		t.Errorf("ErrorCategories[status_500] = 0, want > 0: %v", snap.ErrorCategories)
+	}
+	sum := int64(0)
+	for _, n := range snap.ErrorCategories {
+		sum += n
+	}
+	if sum != snap.TotalErrors {
+		t.Errorf("ErrorCategories sum = %d, want %d (every error must be categorized)", sum, snap.TotalErrors)
+	}
+}
+
+// timeoutErr implements net.Error so the classifier's typed Timeout() check
+// picks it up, mimicking a client.Do deadline expiry.
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "request timed out" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
+
+// stressMixTransport deterministically varies transport outcomes across one
+// run: connection refused, timeout, 503, 404, then 200, cycling. Dialing never
+// actually happens — the RoundTripper fabricates responses/errors.
+type stressMixTransport struct {
+	n atomic.Int64
+}
+
+func (tr *stressMixTransport) RoundTrip(_ *http.Request) (*http.Response, error) {
+	switch tr.n.Add(1) % 5 {
+	case 0:
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+	case 1:
+		return nil, timeoutErr{}
+	case 2:
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: http.NoBody, Header: make(http.Header)}, nil
+	case 3:
+		return &http.Response{StatusCode: http.StatusNotFound, Body: http.NoBody, Header: make(http.Header)}, nil
+	default:
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+	}
+}
+
+func TestEngineRunCategorizesMixedErrors(t *testing.T) {
+	transport := &stressMixTransport{}
+	e := NewEngine(Config{
+		TargetURL:      "http://target.invalid", // RoundTripper never dials it
+		TargetRPS:      30,
+		Duration:       600 * time.Millisecond,
+		Concurrency:    5,
+		RequestTimeout: 2 * time.Second,
+	}, &http.Client{Transport: transport})
+
+	snap := e.Run(context.Background())
+
+	if snap.TotalRequests == 0 {
+		t.Fatal("no requests fired; cannot assess categorization")
+	}
+	if snap.ErrorCategories[ErrConnectionRefused] == 0 {
+		t.Errorf("ErrorCategories[%q] = 0, want > 0 (conn-refused requests)", ErrConnectionRefused)
+	}
+	if snap.ErrorCategories[ErrTimeout] == 0 {
+		t.Errorf("ErrorCategories[%q] = 0, want > 0 (timeout requests)", ErrTimeout)
+	}
+	if snap.ErrorCategories["status_503"] == 0 {
+		t.Errorf("ErrorCategories[status_503] = 0, want > 0 (5xx requests)")
+	}
+	if _, ok := snap.ErrorCategories["status_404"]; ok {
+		t.Errorf("ErrorCategories[status_404] present: 4xx must NOT count as errors (original boundary was >= 500 only)")
+	}
+	sum := int64(0)
+	for _, n := range snap.ErrorCategories {
+		sum += n
+	}
+	if sum != snap.TotalErrors {
+		t.Errorf("ErrorCategories sum = %d, want %d (every error categorized, 4xx excluded)", sum, snap.TotalErrors)
+	}
+}
+
+func TestEngineRunCategorizesConnectionRefused(t *testing.T) {
+	// A listener that exists, then vanishes: dialing its address yields a real
+	// ECONNREFUSED wrapped by the real http.Client transport (not a fake).
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	deadURL := "http://" + srv.Listener.Addr().String()
+	srv.Close()
+
+	e := NewEngine(Config{
+		TargetURL:      deadURL,
+		TargetRPS:      40,
+		Duration:       300 * time.Millisecond,
+		Concurrency:    4,
+		RequestTimeout: 2 * time.Second,
+	}, NewClientPool(64))
+
+	snap := e.Run(context.Background())
+
+	if snap.TotalRequests == 0 {
+		t.Fatal("no requests fired against the dead endpoint")
+	}
+	if snap.TotalErrors == 0 {
+		t.Fatal("expected errors dialing a closed endpoint")
+	}
+	if snap.ErrorCategories[ErrConnectionRefused] == 0 {
+		t.Errorf("ErrorCategories[%q] = 0, want > 0 (real dial errors): %v", ErrConnectionRefused, snap.ErrorCategories)
+	}
+	sum := int64(0)
+	for _, n := range snap.ErrorCategories {
+		sum += n
+	}
+	if sum != snap.TotalErrors {
+		t.Errorf("ErrorCategories sum = %d, want %d (every dial error must be categorized)", sum, snap.TotalErrors)
 	}
 }
 

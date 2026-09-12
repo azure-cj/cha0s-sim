@@ -2,8 +2,13 @@ package stress
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -35,8 +40,8 @@ type Config struct {
 // Engine owns everything a load run needs: the shared client pool, the metrics
 // accumulator, and the shared rate limiter that paces all workers.
 type Engine struct {
-	cfg    Config
-	client *http.Client
+	cfg     Config
+	client  *http.Client
 	metrics *Metrics
 	limiter *rate.Limiter
 }
@@ -156,8 +161,13 @@ func (e *Engine) trackProgress(ctx context.Context, done chan<- struct{}) {
 	}
 }
 
-// fire issues one timed GET and records its outcome. Errors and 5xx responses
-// both count as errors.
+// fire issues one timed GET and records its outcome. The success/failure
+// boundary is unchanged from the original engine: a request that fails to be
+// built, fails at the transport (client.Do error), or returns a 5xx response
+// counts as an error; everything else (2xx/3xx/4xx) is a success. What changed
+// is that Record now receives a category label instead of a bool — transport
+// failures are classified (connection refused / timeout / dns / other), 5xx
+// responses use the status code itself, and successes pass "".
 func (e *Engine) fire(runCtx context.Context) {
 	start := time.Now()
 	reqCtx := runCtx
@@ -168,22 +178,59 @@ func (e *Engine) fire(runCtx context.Context) {
 	}
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, e.cfg.TargetURL, nil)
-	isError := false
+	category := ""
 	if err == nil {
 		resp, err := e.client.Do(req)
 		if err != nil {
-			isError = true
+			category = classifyHTTPError(err)
 		} else {
 			_ = resp.Body.Close()
-			isError = resp.StatusCode >= 500
+			if resp.StatusCode >= 500 {
+				category = "status_" + strconv.Itoa(resp.StatusCode)
+			}
+			// Any non-5xx status (2xx/3xx/4xx) stays a success, exactly as the
+			// original `isError = resp.StatusCode >= 500` boundary defined it.
 		}
 	} else {
-		isError = true
+		category = ErrOther
 	}
 
 	latencyMs := time.Since(start).Milliseconds()
 	if latencyMs < 1 {
 		latencyMs = 1 // histogram floor is 1ms; sub-ms responses clamp to 1
 	}
-	e.metrics.Record(latencyMs, isError)
+	e.metrics.Record(latencyMs, category)
+}
+
+// classifyHTTPError maps a client.Do transport error to a category label.
+// The mapping is intentionally pragmatic: Go's http client wraps transport
+// errors in opaque url.Error chains, so typed net.Error / *net.DNSError /
+// syscall.Errno checks run first, with a string-contains fallback for cases
+// the net package rephrases (e.g. Windows' "actively refused" wording). This
+// is a known simplification over exhaustively unwrapping every transport
+// topology. Anything unrecognized becomes ErrOther.
+func classifyHTTPError(err error) string {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return ErrTimeout
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return ErrDNS
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) && errno == syscall.ECONNREFUSED {
+		return ErrConnectionRefused
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "connection refused"), strings.Contains(msg, "actively refused"):
+		return ErrConnectionRefused
+	case strings.Contains(msg, "timeout"), strings.Contains(msg, "deadline exceeded"):
+		return ErrTimeout
+	case strings.Contains(msg, "no such host"), strings.Contains(msg, "server misbehaving"):
+		return ErrDNS
+	default:
+		return ErrOther
+	}
 }

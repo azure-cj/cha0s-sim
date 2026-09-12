@@ -9,7 +9,7 @@ func TestMetricsPercentilesSaneRange(t *testing.T) {
 
 	// 100 samples: 10ms, 20ms, ..., 1000ms.
 	for i := 1; i <= 100; i++ {
-		m.Record(int64(i*10), false)
+		m.Record(int64(i*10), "")
 	}
 
 	snap := m.Snapshot()
@@ -44,9 +44,15 @@ func TestMetricsPercentilesSaneRange(t *testing.T) {
 
 func TestMetricsErrorRate(t *testing.T) {
 	m := NewMetrics()
-	// 20 requests, 5 failures -> 25% error rate.
+	// 20 requests, 5 failures -> 25% error rate. Categorization is orthogonal
+	// to the aggregate: 5 timeout errors must still land in totalErrors and
+	// errorCategories, leaving the 0.25 rate intact.
 	for i := 0; i < 20; i++ {
-		m.Record(int64(50), i < 5)
+		if i < 5 {
+			m.Record(int64(50), ErrTimeout)
+		} else {
+			m.Record(int64(50), "")
+		}
 	}
 
 	snap := m.Snapshot()
@@ -60,11 +66,75 @@ func TestMetricsErrorRate(t *testing.T) {
 	if snap.TotalRequests != 20 {
 		t.Errorf("TotalRequests = %d, want 20", snap.TotalRequests)
 	}
+	if snap.ErrorCategories[ErrTimeout] != 5 {
+		t.Errorf("ErrorCategories[%q] = %d, want 5", ErrTimeout, snap.ErrorCategories[ErrTimeout])
+	}
+}
+
+func TestMetricsErrorCategorization(t *testing.T) {
+	m := NewMetrics()
+	// Mix of categories + successes in one run, matching what the engine emits:
+	// connection-refused, a 503 status error, a 500 status error, and successes.
+	m.Record(10, "")
+	m.Record(20, ErrConnectionRefused)
+	m.Record(30, "status_503")
+	m.Record(40, "")
+	m.Record(50, "status_500")
+
+	snap := m.Snapshot()
+
+	if snap.TotalRequests != 5 {
+		t.Errorf("TotalRequests = %d, want 5", snap.TotalRequests)
+	}
+	if snap.TotalErrors != 3 {
+		t.Errorf("TotalErrors = %d, want 3", snap.TotalErrors)
+	}
+	want := map[string]int64{ErrConnectionRefused: 1, "status_503": 1, "status_500": 1}
+	for cat, n := range want {
+		if snap.ErrorCategories[cat] != n {
+			t.Errorf("ErrorCategories[%q] = %d, want %d", cat, snap.ErrorCategories[cat], n)
+		}
+	}
+	if len(snap.ErrorCategories) != 3 {
+		t.Errorf("ErrorCategories has %d entries, want exactly 3: %v", len(snap.ErrorCategories), snap.ErrorCategories)
+	}
+	if _, ok := snap.ErrorCategories[""]; ok {
+		t.Error("empty-string (success) category must never be recorded as a key")
+	}
+	// Non-empty categories recorded together with a run that also has successes:
+	// sums must reconcile against the aggregates.
+	sum := int64(0)
+	for _, n := range snap.ErrorCategories {
+		sum += n
+	}
+	if sum != snap.TotalErrors {
+		t.Errorf("ErrorCategories sum = %d, want %d (must equal TotalErrors)", sum, snap.TotalErrors)
+	}
+}
+
+func TestMetricsSnapshotCopiesErrorCategories(t *testing.T) {
+	m := NewMetrics()
+	m.Record(10, ErrTimeout)
+	m.Record(20, "status_503")
+
+	snap := m.Snapshot()
+	// Mutating the caller's snapshot must never leak back into the Metrics.
+	snap.ErrorCategories[ErrTimeout] = 9999
+	snap.ErrorCategories["injected"] = 1
+
+	again := m.Snapshot()
+	if again.ErrorCategories[ErrTimeout] != 1 {
+		t.Errorf("snapshot mutation leaked into live Metrics: ErrorCategories[%q] = %d, want 1",
+			ErrTimeout, again.ErrorCategories[ErrTimeout])
+	}
+	if _, ok := again.ErrorCategories["injected"]; ok {
+		t.Error("snapshot mutation leaked into live Metrics: injected key present")
+	}
 }
 
 func TestMetricsAllZeroAfterOneRecordIsError(t *testing.T) {
 	m := NewMetrics()
-	m.Record(100, true)
+	m.Record(100, ErrOther)
 	snap := m.Snapshot()
 
 	if snap.ErrorRate != 1 {
@@ -72,6 +142,9 @@ func TestMetricsAllZeroAfterOneRecordIsError(t *testing.T) {
 	}
 	if snap.P50Ms == 0 || snap.P95Ms == 0 || snap.P99Ms == 0 {
 		t.Errorf("percentiles should be populated after one record: %+v", snap)
+	}
+	if snap.ErrorCategories[ErrOther] != 1 {
+		t.Errorf("ErrorCategories[%q] = %d, want 1", ErrOther, snap.ErrorCategories[ErrOther])
 	}
 }
 
@@ -91,7 +164,11 @@ func TestMetricsZeroRequestsSnapshot(t *testing.T) {
 func TestMetricsResetClearsState(t *testing.T) {
 	m := NewMetrics()
 	for i := 1; i <= 100; i++ {
-		m.Record(int64(i*10), i%3 == 0)
+		if i%3 == 0 {
+			m.Record(int64(i*10), ErrConnectionRefused)
+		} else {
+			m.Record(int64(i*10), "")
+		}
 	}
 
 	before := m.Snapshot()
@@ -108,9 +185,12 @@ func TestMetricsResetClearsState(t *testing.T) {
 	if snap.P50Ms != 0 || snap.P95Ms != 0 || snap.P99Ms != 0 {
 		t.Errorf("post-reset percentiles not zero: %+v", snap)
 	}
+	if len(snap.ErrorCategories) != 0 {
+		t.Errorf("post-reset ErrorCategories not cleared: %v", snap.ErrorCategories)
+	}
 
 	// Post-reset, a fresh record still lands (startTime was repinned).
-	m.Record(25, false)
+	m.Record(25, "")
 	after := m.Snapshot()
 	if after.TotalRequests != 1 {
 		t.Errorf("post-reset record got TotalRequests = %d, want 1", after.TotalRequests)
@@ -129,7 +209,7 @@ func TestMetricsConcurrentRecording(t *testing.T) {
 	for w := 0; w < workers; w++ {
 		go func() {
 			for i := 0; i < perWorker; i++ {
-				m.Record(int64(10+(i%100)), false)
+				m.Record(int64(10+(i%100)), "")
 			}
 			done <- struct{}{}
 		}()

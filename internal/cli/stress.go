@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"sort"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -101,4 +102,15 @@ func printSnapshot(s stress.MetricsSnapshot) {
 	fmt.Printf("P50 latency:    %d ms\n", s.P50Ms)
 	fmt.Printf("P95 latency:    %d ms\n", s.P95Ms)
 	fmt.Printf("P99 latency:    %d ms\n", s.P99Ms)
+	if len(s.ErrorCategories) > 0 {
+		fmt.Println("Error categories:")
+		keys := make([]string, 0, len(s.ErrorCategories))
+		for k := range s.ErrorCategories {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Printf("  %-20s %d\n", k, s.ErrorCategories[k])
+		}
+	}
 }
