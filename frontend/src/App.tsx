@@ -389,7 +389,7 @@ interface ChaosTag {
     title: string; // HTML title tooltip with a one-line plain-language description
 }
 
-// Chaos-effect tags share the accent-cyan pill styling; each effect is
+// Chaos-effect tags share the accent-primary pill styling; each effect is
 // differentiated by its lucide glyph, so the pills stay a uniform accent color
 // via currentColor instead of mixing severities in a compact row.
 const CHAOS_EFFECT_ICONS: Record<string, LucideIcon> = {
@@ -744,9 +744,9 @@ type EffectId = 'slow' | 'error' | 'drop' | 'corrupt' | 'attack';
 type AttackId = 'sqli' | 'xss' | 'path_traversal';
 
 const EFFECT_CARDS: {id: EffectId; icon: LucideIcon; color: string; name: string; desc: string}[] = [
-    {id: 'slow', icon: Turtle, color: 'var(--accent-cyan)', name: 'Slow it down', desc: 'Delay the response to simulate a slow network'},
+    {id: 'slow', icon: Turtle, color: 'var(--accent-primary)', name: 'Slow it down', desc: 'Delay the response to simulate a slow network'},
     {id: 'error', icon: AlertTriangle, color: 'var(--severity-warning)', name: 'Fake an error', desc: 'Return a fake error status instead of the real response'},
-    {id: 'drop', icon: Unplug, color: 'var(--accent-cyan)', name: 'Cut the connection', desc: 'Simulate the connection suddenly dropping'},
+    {id: 'drop', icon: Unplug, color: 'var(--accent-primary)', name: 'Cut the connection', desc: 'Simulate the connection suddenly dropping'},
     {id: 'corrupt', icon: Dna, color: 'var(--log-security)', name: 'Corrupt the data', desc: 'Remove fields from the response'},
     {id: 'attack', icon: Crosshair, color: 'var(--severity-critical)', name: 'Test for security holes', desc: 'Send malicious test data to check input validation'},
 ];
