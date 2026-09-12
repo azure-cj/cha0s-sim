@@ -1,12 +1,17 @@
 import {ChangeEvent, useCallback, useEffect, useRef, useState} from 'react';
 import {
+    Activity,
     AlertTriangle,
     ArrowRight,
+    Boxes,
     Check,
     ChevronDown,
     Crosshair,
     Dna,
     Flame,
+    Shield,
+    ShieldAlert,
+    SlidersHorizontal,
     TrendingUp,
     Turtle,
     Unplug,
@@ -1998,6 +2003,7 @@ function App() {
     const [scorecardOpen, setScorecardOpen] = useState(false);
     const [reportCopied, setReportCopied] = useState(false);
     const [logFilter, setLogFilter] = useState<'all' | 'chaos' | 'security'>('all');
+    const [rulesSummary, setRulesSummary] = useState<{active: number; total: number}>({active: 0, total: 0});
     const idRef = useRef(0);
     const copyTimer = useRef<number | null>(null);
     const reportTimer = useRef<number | null>(null);
@@ -2005,6 +2011,12 @@ function App() {
     const refresh = () => {
         GetAllSessionStatuses().then(statuses => {
             setSessionStatus(statuses);
+        });
+    };
+
+    const loadRulesSummary = () => {
+        GetRules().then(rules => {
+            setRulesSummary({active: rules.filter(r => r.enabled).length, total: rules.length});
         });
     };
 
@@ -2021,6 +2033,7 @@ function App() {
 
     useEffect(() => {
         refresh();
+        loadRulesSummary();
 
         // Load the upstream target URL once so the Dashboard's "Copy as cURL"
         // action can point method + path at the configured upstream target.
@@ -2028,7 +2041,10 @@ function App() {
 
         // Poll session running states so the Dashboard overview cards and the
         // sidebar session indicators stay current while sessions run.
-        const statusTimer = window.setInterval(refresh, 1000);
+        const statusTimer = window.setInterval(() => {
+            refresh();
+            loadRulesSummary();
+        }, 1000);
 
         // Tick frequently enough that auto-suggestion badges reliably disappear
         // ~30s after their clean traffic event arrived, without needing any
@@ -2253,27 +2269,71 @@ function App() {
 
                 {view === 'dashboard' && (
                     <div className="dashboard">
-                        <div className="overview">
+                        <div className="kpi-strip">
                             {SESSION_OVERVIEW.map(session => {
                                 const isRunning = !!sessionStatus[session.name];
+                                const isChaos = session.name === CHAOS_SESSION_NAME;
                                 return (
                                     <button
                                         key={session.name}
-                                        className="overview-card"
+                                        className={`kpi-card kpi-card--button${isChaos ? ' kpi-card--chaos' : ' kpi-card--security'}`}
                                         onClick={() => setView(session.view)}
                                     >
-                                        <div className="overview-card-header">
+                                        <div className="kpi-head">
+                                            <span className="kpi-icon">
+                                                {isChaos
+                                                    ? <Boxes size={15} strokeWidth={2.2} aria-hidden="true" />
+                                                    : <Shield size={15} strokeWidth={2.2} aria-hidden="true" />}
+                                            </span>
+                                            <span className="kpi-label">{session.label} Session</span>
+                                            <ArrowRight className="kpi-arrow" size={14} strokeWidth={2.2} aria-hidden="true" />
+                                        </div>
+                                        <div className="kpi-value-row">
                                             <span className={`status-dot${isRunning ? ' status-dot--running' : ''}`} />
-                                            <span className={`overview-status${isRunning ? ' overview-status--running' : ''}`}>
+                                            <span className={`kpi-value${isRunning ? ' kpi-value--running' : ''}`}>
                                                 {isRunning ? 'Running' : 'Stopped'}
                                             </span>
                                         </div>
-                                        <div className="overview-name">{session.label}</div>
-                                        <div className="overview-port">port {session.port}</div>
-                                        <div className="overview-hint">Open {session.label} <ArrowRight size={14} strokeWidth={2.2} aria-hidden="true" /></div>
+                                        <div className="kpi-detail">port {session.port}</div>
                                     </button>
                                 );
                             })}
+                            {(() => {
+                                const trafficCount = entries.filter(e => e.event).length;
+                                const findings = entries.filter(e => e.finding);
+                                const criticalFindings = findings.filter(e => e.severity === 'critical').length;
+                                const hasCritical = criticalFindings > 0;
+                                return (
+                                    <>
+                                        <div className="kpi-card">
+                                            <div className="kpi-head">
+                                                <span className="kpi-icon"><Activity size={15} strokeWidth={2.2} aria-hidden="true" /></span>
+                                                <span className="kpi-label">Requests Seen</span>
+                                            </div>
+                                            <div className="kpi-value">{trafficCount}</div>
+                                            <div className="kpi-detail">traffic in live buffer</div>
+                                        </div>
+                                        <div className={`kpi-card${hasCritical ? ' kpi-card--danger' : findings.length > 0 ? ' kpi-card--good' : ''}`}>
+                                            <div className="kpi-head">
+                                                <span className="kpi-icon"><ShieldAlert size={15} strokeWidth={2.2} aria-hidden="true" /></span>
+                                                <span className="kpi-label">Findings</span>
+                                            </div>
+                                            <div className={`kpi-value${hasCritical ? ' kpi-value--critical' : findings.length > 0 ? ' kpi-value--good' : ''}`}>
+                                                {findings.length}
+                                            </div>
+                                            <div className="kpi-detail">{hasCritical ? `${criticalFindings} critical` : 'all clear'}</div>
+                                        </div>
+                                        <div className="kpi-card">
+                                            <div className="kpi-head">
+                                                <span className="kpi-icon"><SlidersHorizontal size={15} strokeWidth={2.2} aria-hidden="true" /></span>
+                                                <span className="kpi-label">Active Rules</span>
+                                            </div>
+                                            <div className="kpi-value kpi-value--accent">{rulesSummary.active}</div>
+                                            <div className="kpi-detail">{rulesSummary.total} total rule{rulesSummary.total === 1 ? '' : 's'}</div>
+                                        </div>
+                                    </>
+                                );
+                            })()}
                         </div>
                         <div className="log-wrap">
                             <div className="log-title-row">
