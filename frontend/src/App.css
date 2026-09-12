@@ -1645,51 +1645,46 @@
     border-radius: 12px;
 }
 
-.stress-feed-row {
+.stress-dials {
     display: flex;
-    align-items: center;
-    gap: 12px;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 36px;
+    flex-wrap: wrap;
 }
 
-.stress-feed-label {
-    flex: 0 0 64px;
+.radial-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.radial-svg {
+    width: 158px;
+    height: 158px;
+    overflow: visible;
+}
+
+.radial-arc {
+    fill: none;
+    stroke: #262626;
+}
+
+.radial-arc--value {
+    transition: stroke-dashoffset 350ms ease, stroke 350ms ease;
+}
+
+.radial-value {
+    font-family: var(--mono);
+    font-size: 26px;
+    font-weight: 700;
+}
+
+.radial-label {
     font-family: var(--mono);
     font-size: 10px;
     letter-spacing: 0.14em;
     color: var(--text-dim);
-    text-transform: uppercase;
-}
-
-.stress-feed-track {
-    flex: 1;
-    height: 14px;
-    background: #262626;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    overflow: hidden;
-}
-
-.stress-feed-bar {
-    height: 100%;
-    border-radius: 999px;
-    transition: width 300ms ease, background 300ms ease;
-    min-width: 2px;
-}
-
-.stress-feed-bar--rps {
-    background: var(--accent-primary);
-}
-
-.stress-feed-bar--good { background: var(--severity-good); }
-.stress-feed-bar--warn { background: var(--severity-warning); }
-.stress-feed-bar--bad  { background: var(--severity-critical); }
-
-.stress-feed-value {
-    flex: 0 0 72px;
-    text-align: right;
-    font-family: var(--mono);
-    font-size: 13px;
-    color: var(--text-primary);
 }
 
 .stress-feed-meta {

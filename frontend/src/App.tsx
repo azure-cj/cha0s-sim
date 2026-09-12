@@ -1158,6 +1158,83 @@ function stressTone(errorRate: number): StressTone {
     return 'good';
 }
 
+// Tone -> severity color, reused for the radial error ring (Task 39's coloring).
+const TONE_COLOR: Record<StressTone, string> = {
+    good: 'var(--severity-good)',
+    warn: 'var(--severity-warning)',
+    bad: 'var(--severity-critical)',
+};
+
+// Path for a 270-degree gauge arc (opening at the bottom), centered (60,60),
+// radius 48, within a 120x120 viewBox. pathLength=100 normalizes every arc to
+// 0..100 so stroke-dasharray/dashoffset work in percent units regardless of
+// geometry (the same trick powers both the gauge and the full-ring variant).
+const GAUGE_ARC_270 = 'M 26.06 93.94 A 48 48 0 1 1 93.94 93.94';
+
+// SVG radial gauge: a 270-degree dial drawn with stroke-dasharray/offset on a
+// normalized path. The value text sits centered inside the arc (the reference
+// dashboard's "big number + label below" dial pattern).
+function RadialGauge({value, min, max, label, color, display}: {
+    value: number;
+    min: number;
+    max: number;
+    label: string;
+    color: string;
+    display: string;
+}) {
+    const frac = max > min ? Math.min(1, Math.max(0, (value - min) / (max - min))) : 0;
+    const dash = 100 - frac * 100;
+    return (
+        <div className="radial-wrap">
+            <svg viewBox="0 0 120 120" className="radial-svg" role="img" aria-label={`${label}: ${display}`}>
+                <path d={GAUGE_ARC_270} pathLength={100} className="radial-arc" strokeWidth={10} strokeLinecap="round" />
+                <path
+                    d={GAUGE_ARC_270}
+                    pathLength={100}
+                    className="radial-arc radial-arc--value"
+                    strokeWidth={10}
+                    strokeLinecap="round"
+                    style={{stroke: color, strokeDasharray: 100, strokeDashoffset: dash}}
+                />
+                <text x="60" y="56" className="radial-value" style={{fill: color}} textAnchor="middle">{display}</text>
+                <text x="60" y="76" className="radial-label" textAnchor="middle">{label}</text>
+            </svg>
+        </div>
+    );
+}
+
+// SVG radial ring: a full-circle 0-100% progress ring (stroke-dasharray/offset
+// on a pathLength-normalized circle), with the percentage centered inside.
+function RadialRing({percentage, label, color, display}: {
+    percentage: number;
+    label: string;
+    color: string;
+    display: string;
+}) {
+    const pct = Math.min(100, Math.max(0, percentage));
+    const dash = 100 - pct;
+    return (
+        <div className="radial-wrap">
+            <svg viewBox="0 0 120 120" className="radial-svg" role="img" aria-label={`${label}: ${display}`}>
+                <circle cx="60" cy="60" r="48" pathLength={100} className="radial-arc" strokeWidth={10} strokeLinecap="round" fill="none" />
+                <circle
+                    cx="60"
+                    cy="60"
+                    r="48"
+                    pathLength={100}
+                    className="radial-arc radial-arc--value"
+                    strokeWidth={10}
+                    strokeLinecap="round"
+                    fill="none"
+                    style={{stroke: color, strokeDasharray: 100, strokeDashoffset: dash}}
+                />
+                <text x="60" y="54" className="radial-value" style={{fill: color}} textAnchor="middle">{display}</text>
+                <text x="60" y="72" className="radial-label" textAnchor="middle">{label}</text>
+            </svg>
+        </div>
+    );
+}
+
 interface PresetDef {
     id: PresetId;
     icon: LucideIcon;
@@ -1189,6 +1266,8 @@ function StressTest() {
     // other presets. Refs keep the event handler stable (no resubscribes).
     const presetRef = useRef<PresetId | null>(null);
     const autoStoppedRef = useRef(false);
+    // Configured TargetRPS for the current run — feeds the RPS gauge's scale.
+    const targetRpsRef = useRef(50);
 
     const handleUpdate = useCallback((u: StressUpdatePayload) => {
         setLatest(u);
@@ -1242,6 +1321,7 @@ function StressTest() {
         }
         presetRef.current = preset;
         autoStoppedRef.current = false;
+        targetRpsRef.current = cfg.targetRPS;
         setLatest(null);
         setHistory([]);
         setPhase('running');
@@ -1437,8 +1517,10 @@ function StressTest() {
     const errorRate = latest?.errorRate ?? 0;
     const tone = stressTone(errorRate);
     const rpsVal = latest?.rps ?? 0;
-    const maxRps = Math.max(...history.map(h => h.rps), 1);
-    const rpsPct = rpsVal > 0 ? Math.max(3, Math.min(100, (rpsVal / maxRps) * 100)) : 0;
+    // Gauge ceiling: headroom (1.1x) above the run's peak RPS seen so far AND
+    // the configured target — so it reads a sensible scale during ramp-up yet
+    // never clips a legitimate spike (e.g. Viral Spike's 500 RPS vs 20 target).
+    const rpsMax = Math.max(...history.map(h => h.rps), targetRpsRef.current, 1) * 1.1;
     const errPct = Math.min(100, errorRate * 100);
 
     const pctCards = [
@@ -1466,19 +1548,21 @@ function StressTest() {
             </div>
 
             <div className="stress-feed">
-                <div className="stress-feed-row">
-                    <span className="stress-feed-label">RPS</span>
-                    <div className="stress-feed-track">
-                        <div className="stress-feed-bar stress-feed-bar--rps" style={{width: `${rpsPct}%`}} />
-                    </div>
-                    <span className="stress-feed-value">{Math.round(rpsVal)}</span>
-                </div>
-                <div className="stress-feed-row">
-                    <span className="stress-feed-label">ERRORS</span>
-                    <div className="stress-feed-track">
-                        <div className={`stress-feed-bar stress-feed-bar--${tone}`} style={{width: `${errPct}%`}} />
-                    </div>
-                    <span className="stress-feed-value">{Math.round(errorRate * 100)}%</span>
+                <div className="stress-dials">
+                    <RadialGauge
+                        value={rpsVal}
+                        min={0}
+                        max={rpsMax}
+                        label="RPS"
+                        color="var(--accent-primary)"
+                        display={String(Math.round(rpsVal))}
+                    />
+                    <RadialRing
+                        percentage={errPct}
+                        label="ERROR RATE"
+                        color={TONE_COLOR[tone]}
+                        display={`${Math.round(errorRate * 100)}%`}
+                    />
                 </div>
                 <div className="stress-feed-meta">
                     Live trace — last {history.length} update{history.length === 1 ? '' : 's'} ·{' '}
