@@ -221,9 +221,9 @@ func TestScenarioEngineBadLoginsDoNotKillIterations(t *testing.T) {
 					ExtractJSON: map[string]string{"authToken": "token"},
 				},
 				{
-					Name:   "protected",
-					Method: http.MethodGet,
-					Path:   "/protected/{{authToken}}",
+					Name:    "protected",
+					Method:  http.MethodGet,
+					Path:    "/protected/{{authToken}}",
 					Headers: map[string]string{"Authorization": "Bearer {{authToken}}"},
 				},
 			},

@@ -12,21 +12,25 @@ import (
 // into a variable that later steps consume. That single mechanism covers the
 // realistic "login then use the token" class of multi-step flows without
 // growing into a full load-scripting language.
+// The YAML tags double as the scenario-file schema (see LoadScenario): an
+// extract map uses the key "extract", and think_time is a Go duration string
+// like "500ms" or "1s". Scenario/Step are also used programmatically, which
+// the tags do not affect.
 type Scenario struct {
-	Name  string
-	Steps []Step
+	Name  string `yaml:"name"`
+	Steps []Step `yaml:"steps"`
 }
 
 // Step is one request within a Scenario, plus the variable-extraction that
 // happens against its own response after it completes.
 type Step struct {
-	Name        string            // diagnostic label surfaced in per-step metrics, e.g. "login"
-	Method      string            // GET/POST/PUT/DELETE/PATCH
-	Path        string            // relative path joined with the scenario base URL; supports {{var}} substitution
-	Body        string            // optional raw request body (JSON typically); supports {{var}} substitution
-	Headers     map[string]string // optional headers; values support {{var}} substitution
-	ExtractJSON map[string]string // variableName -> top-level JSON key on THIS step's response body
-	ThinkTime   time.Duration     // delay after this step completes, before the next step resumes
+	Name        string            `yaml:"name"`       // diagnostic label surfaced in per-step metrics, e.g. "login"
+	Method      string            `yaml:"method"`     // GET/POST/PUT/DELETE/PATCH
+	Path        string            `yaml:"path"`       // relative path joined with the scenario base URL; supports {{var}} substitution
+	Body        string            `yaml:"body"`       // optional raw request body (JSON typically); supports {{var}} substitution
+	Headers     map[string]string `yaml:"headers"`    // optional headers; values support {{var}} substitution
+	ExtractJSON map[string]string `yaml:"extract"`    // variableName -> top-level JSON key on THIS step's response body
+	ThinkTime   time.Duration     `yaml:"think_time"` // delay after this step completes, before the next step resumes
 }
 
 // placeholderRe matches a {{variableName}} token with optional surrounding

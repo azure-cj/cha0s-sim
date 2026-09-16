@@ -1,0 +1,30 @@
+# cha0s-sim example multi-step scenario (load testing).
+#
+# A scenario is an ordered list of steps a virtual user runs through, looping
+# until --duration elapses. Variables extracted from one step's JSON response
+# (top-level keys only) can be referenced in LATER steps as {{name}} anywhere
+# in a path, body, or header value.
+#
+# Copy this file and tweak, then run:
+#   cha0s-sim stress scenario --file=configs/scenario.example.yaml --target=http://localhost:3000 --vus=5 --duration=30s
+#
+# think_time is a Go duration string ("500ms", "1s", "2m30s") run after each
+# step completes; it is what paces virtual users (there is no target RPS — load
+# is a function of concurrent users and their natural pacing).
+name: "login and browse"
+steps:
+  - name: "login"
+    method: POST
+    path: "/api/login"
+    body: '{"username":"test","password":"test"}'
+    extract:
+      authToken: "token"
+    think_time: 500ms
+
+  # The token extracted by the login step is now available as {{authToken}}.
+  - name: "get profile"
+    method: GET
+    path: "/api/profile"
+    headers:
+      Authorization: "Bearer {{authToken}}"
+    think_time: 1s

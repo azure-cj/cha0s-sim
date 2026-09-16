@@ -8,12 +8,12 @@ import (
 
 func TestBuildShape(t *testing.T) {
 	const (
-		base        = 10.0
-		end         = 100.0
-		stepSize    = 5.0
-		stepDur     = 10 * time.Second
-		spikeRPS    = 200.0
-		spikeStart  = 5 * time.Second
+		base          = 10.0
+		end           = 100.0
+		stepSize      = 5.0
+		stepDur       = 10 * time.Second
+		spikeRPS      = 200.0
+		spikeStart    = 5 * time.Second
 		spikeDuration = 2 * time.Second
 	)
 
