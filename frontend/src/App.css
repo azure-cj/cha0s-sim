@@ -1351,6 +1351,69 @@
     color: var(--text-dim);
 }
 
+/* Endpoint picker (wizard Step A): the input stays a normal settings-input;
+   the suggestion list is an absolutely-positioned extension rendered directly
+   beneath it, so it reads as part of the same control rather than a separate
+   widget. Shares the panel/border/radius language of the input itself. */
+.endpoint-combo {
+    position: relative;
+}
+
+.endpoint-suggest {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    z-index: 20;
+    margin: 0;
+    padding: 4px;
+    list-style: none;
+    max-height: 220px;
+    overflow-y: auto;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+}
+
+.endpoint-suggest-item {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.endpoint-suggest-item--active {
+    background: rgba(255, 91, 31, 0.12);
+}
+
+.endpoint-suggest-method {
+    flex: none;
+    min-width: 48px;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    color: var(--accent-primary);
+}
+
+.endpoint-suggest-path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.endpoint-suggest-count {
+    flex: none;
+    font-size: 10px;
+    color: var(--text-dim);
+}
+
 .wizard-chips {
     display: flex;
     flex-wrap: wrap;

@@ -1,4 +1,4 @@
-import {ChangeEvent, useCallback, useEffect, useRef, useState} from 'react';
+import {ChangeEvent, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent} from 'react';
 import {
     Activity,
     AlertTriangle,
@@ -22,6 +22,7 @@ import {ClipboardSetText, EventsOn} from "../wailsjs/runtime/runtime";
 import {
     CreateRule,
     GetAllSessionStatuses,
+    GetDiscoveredEndpoints,
     GetRules,
     GetSessionStatus,
     GetSettings,
@@ -33,7 +34,7 @@ import {
     StopStressTest,
     ToggleRule,
 } from "../wailsjs/go/main/App";
-import {config, main} from '../wailsjs/go/models';
+import {config, discovery, main} from '../wailsjs/go/models';
 import bootBackground from './assets/images/boot-background.jpg';
 import './App.css';
 
@@ -783,6 +784,109 @@ const FREQUENCY_CARDS: {id: string; label: string; desc: string}[] = [
 
 const FREQUENCY_RATES: Record<string, number> = {always: 1.0, often: 0.5, sometimes: 0.2, rarely: 0.05};
 
+// EndpointCombo is the wizard Step A path field's autocomplete: the input IS the
+// free-text entry (manual paths stay fully supported, no rigid dropdown-only
+// control), with a suggestion list of endpoints actually observed on the session
+// rendered directly beneath it. Standard autocomplete behavior — plain React
+// state, no component library:
+//   - typing filters the observed endpoints by substring match on the path
+//   - the list appears on focus and stays open while the field is focused
+//   - clicking (or keyboard arrow+enter) fills the path via onPick
+//   - mousedown on an item is prevented so the input never blurs before the
+//     click lands
+function EndpointCombo({value, onChange, endpoints, onPick}: {
+    value: string;
+    onChange: (v: string) => void;
+    endpoints: discovery.Endpoint[];
+    onPick: (ep: discovery.Endpoint) => void;
+}) {
+    const [open, setOpen] = useState(false);
+    const [active, setActive] = useState(-1);
+
+    const query = value.trim().toLowerCase();
+    // The backend already returns most-seen-first; the sort here just defends
+    // the ordering regardless of where the list came from. Filtering preserves
+    // that order, so the most-observed endpoints surface first as you type.
+    const matches = useMemo(
+        () => endpoints
+            .filter(e => e.path.toLowerCase().includes(query))
+            .sort((a, b) => b.seenCount - a.seenCount),
+        [endpoints, query],
+    );
+
+    const choose = (ep: discovery.Endpoint) => {
+        onPick(ep);
+        setOpen(false);
+        setActive(-1);
+    };
+
+    const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+        if (!open || matches.length === 0) {
+            return;
+        }
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setActive(i => (i + 1) % matches.length);
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setActive(i => (i <= 0 ? matches.length - 1 : i - 1));
+        } else if (e.key === 'Enter') {
+            if (active >= 0) {
+                e.preventDefault();
+                choose(matches[active]);
+            }
+        } else if (e.key === 'Escape') {
+            setOpen(false);
+        }
+    };
+
+    return (
+        <div className="endpoint-combo">
+            <input
+                className="settings-input"
+                id="wizard-path"
+                type="text"
+                placeholder="e.g. /api/checkout"
+                value={value}
+                onChange={e => {
+                    onChange(e.target.value);
+                    setOpen(true);
+                    setActive(-1);
+                }}
+                onFocus={() => setOpen(true)}
+                onBlur={() => setOpen(false)}
+                onKeyDown={onKeyDown}
+                autoComplete="off"
+                role="combobox"
+                aria-expanded={open && matches.length > 0}
+                aria-autocomplete="list"
+                aria-controls="wizard-path-suggestions"
+            />
+            {open && matches.length > 0 && (
+                <ul className="endpoint-suggest" id="wizard-path-suggestions" role="listbox">
+                    {matches.map((ep, i) => (
+                        <li
+                            key={`${ep.method} ${ep.path}`}
+                            role="option"
+                            aria-selected={i === active}
+                            className={`endpoint-suggest-item${i === active ? ' endpoint-suggest-item--active' : ''}`}
+                            onMouseDown={e => e.preventDefault()}
+                            onMouseEnter={() => setActive(i)}
+                            onClick={() => choose(ep)}
+                        >
+                            <span className="endpoint-suggest-method">{ep.method}</span>
+                            <span className="endpoint-suggest-path">{ep.path}</span>
+                            <span className="endpoint-suggest-count">
+                                seen {ep.seenCount} {ep.seenCount === 1 ? 'time' : 'times'}
+                            </span>
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </div>
+    );
+}
+
 function RuleCreateWizard({onClose, onCreated}: {
     onClose: () => void;
     onCreated: (payload: {kind: 'success'; name: string} | {kind: 'warning'; message: string}) => void;
@@ -799,6 +903,41 @@ function RuleCreateWizard({onClose, onCreated}: {
     const [frequency, setFrequency] = useState('always');
     const [error, setError] = useState('');
     const [creating, setCreating] = useState(false);
+
+    // Endpoints the chaos session has actually been observed serving. Fetched
+    // once when the wizard mounts (the wizard only mounts while open) and used
+    // to populate Step A's suggestion picker. Empty list -> the wizard still
+    // works: the manual path input remains, with a helper note.
+    const [endpoints, setEndpoints] = useState<discovery.Endpoint[]>([]);
+
+    useEffect(() => {
+        let cancelled = false;
+        GetDiscoveredEndpoints(CHAOS_SESSION_NAME).then(eps => {
+            if (!cancelled) {
+                setEndpoints(eps);
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    // pickEndpoint fills the path when a suggestion is chosen. Method
+    // pre-selection is only attempted when the observed endpoint is UNAMBIGUOUS
+    // (exactly one distinct method seen for this normalized path) AND that
+    // method is one the wizard/backend can express (GET/POST/PUT/DELETE/PATCH).
+    // A path seen under multiple methods, or an exotic method like HEAD, means
+    // we don't guess — the path is filled and the user picks the method.
+    const pickEndpoint = (ep: discovery.Endpoint) => {
+        setError('');
+        setPath(ep.path);
+        const seenMethods = Array.from(new Set(
+            endpoints.filter(e => e.path === ep.path).map(e => e.method),
+        ));
+        if (seenMethods.length === 1 && METHOD_CHOICES.includes(seenMethods[0])) {
+            setMethods([seenMethods[0]]);
+        }
+    };
 
     const corruptKeys = corruptFields.split(',').map(s => s.trim()).filter(Boolean);
 
@@ -944,17 +1083,21 @@ function RuleCreateWizard({onClose, onCreated}: {
                         </div>
                         <div className="settings-field">
                             <label htmlFor="wizard-path">Endpoint / Path</label>
-                            <input
-                                className="settings-input"
-                                id="wizard-path"
-                                type="text"
-                                placeholder="e.g. /api/checkout"
+                            <EndpointCombo
                                 value={path}
-                                onChange={e => setPath(e.target.value)}
+                                onChange={setPath}
+                                endpoints={endpoints}
+                                onPick={pickEndpoint}
                             />
-                            <span className="wizard-note">
-                                This is the URL path your app calls, like /api/users or /api/checkout.
-                            </span>
+                            {endpoints.length === 0 ? (
+                                <span className="wizard-note">
+                                    No traffic observed yet — start the Chaos session and browse your app, or type a path manually below.
+                                </span>
+                            ) : (
+                                <span className="wizard-note">
+                                    Pick an endpoint seen in real traffic, or type any path manually.
+                                </span>
+                            )}
                         </div>
                         <div className="settings-field">
                             <label>Request method</label>
