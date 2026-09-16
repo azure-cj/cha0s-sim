@@ -72,7 +72,7 @@ func TestCLIProxyPrintsFindingsForLeakyBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse backend URL: %v", err)
 	}
-	srv := proxy.NewServerInstance(0, target, false, false, false, nil, proxy.PipelineFull, "", &stdoutSink{out: &buf, verbose: false})
+	srv := proxy.NewServerInstance(0, target, false, false, false, nil, proxy.PipelineFull, "", nil, &stdoutSink{out: &buf, verbose: false})
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)
 

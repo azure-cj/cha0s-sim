@@ -58,8 +58,9 @@ func run(port int, u *url.URL, preserveHost, insecureSkipVerify, verbose bool, a
 	// SessionName is "" for CLI-originated events: the plain CLI proxy has no
 	// session concept (it is not part of the desktop's session system). The
 	// stdout sink prints security findings to stdout regardless of the flag;
-	// per-request traffic lines are only shown with --verbose.
-	proxySrv := proxy.NewServerInstance(port, u, preserveHost, insecureSkipVerify, verbose, store, proxy.PipelineFull, "", &stdoutSink{out: os.Stdout, verbose: verbose})
+	// per-request traffic lines are only shown with --verbose. The registry is
+	// nil too: endpoint discovery is a desktop-session feature with no CLI UI.
+	proxySrv := proxy.NewServerInstance(port, u, preserveHost, insecureSkipVerify, verbose, store, proxy.PipelineFull, "", nil, &stdoutSink{out: os.Stdout, verbose: verbose})
 
 	errCh := make(chan error, 2)
 

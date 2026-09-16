@@ -48,7 +48,7 @@ func sessionProxy(t *testing.T, backendURL string, store *config.Store, mode Pip
 		t.Fatalf("failed to parse backend URL %q: %v", backendURL, err)
 	}
 	sink := newCollectingSink()
-	srv := NewServerInstance(0, target, false, false, false, store, mode, sessionName, sink)
+	srv := NewServerInstance(0, target, false, false, false, store, mode, sessionName, nil, sink)
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)
 	return ts, sink

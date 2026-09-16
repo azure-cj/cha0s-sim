@@ -72,7 +72,7 @@ func eventProxy(t *testing.T, backendURL string, store *config.Store, sink Event
 	if err != nil {
 		t.Fatalf("failed to parse backend URL %q: %v", backendURL, err)
 	}
-	srv := NewServerInstance(0, target, false, false, false, store, PipelineFull, sessionName, sink)
+	srv := NewServerInstance(0, target, false, false, false, store, PipelineFull, sessionName, nil, sink)
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)
 	return ts.URL
@@ -230,7 +230,7 @@ func TestHeadlessServerWithoutSinkStillProxies(t *testing.T) {
 
 	// No sink supplied — exactly what the headless CLI does. The chain must
 	// still serve requests without emitting or crashing.
-	srv := NewServerInstance(0, target, false, false, false, nil, PipelineFull, "")
+	srv := NewServerInstance(0, target, false, false, false, nil, PipelineFull, "", nil)
 	ts := httptest.NewServer(srv.Handler)
 	defer ts.Close()
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"cha0s-sim/internal/config"
+	"cha0s-sim/internal/discovery"
 	"cha0s-sim/internal/platform"
 )
 
@@ -77,7 +78,12 @@ type ChaosEffect struct {
 // holder) so BOTH the traffic event emitted here AND the security findings
 // emitted later by the scanner path (which only has the response, via
 // resp.Request.Context()) carry the originating session's identity.
-func withEventSink(sessionName string, sink EventSink, next http.Handler) http.Handler {
+//
+// registry, when non-nil, records each request into the passive endpoint
+// observer at exactly the point TrafficEvent is constructed — same session
+// attribution, same method/path source. The desktop app passes its App-level
+// registry; the CLI passes nil and observation stays off.
+func withEventSink(sessionName string, sink EventSink, registry *discovery.Registry, next http.Handler) http.Handler {
 	if sink == nil {
 		return next
 	}
@@ -88,6 +94,10 @@ func withEventSink(sessionName string, sink EventSink, next http.Handler) http.H
 		if IsWebSocketUpgrade(req) {
 			next.ServeHTTP(w, req)
 			return
+		}
+
+		if registry != nil {
+			registry.Record(sessionName, req.Method, req.URL.Path)
 		}
 
 		started := time.Now()

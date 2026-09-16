@@ -11,6 +11,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"cha0s-sim/internal/config"
+	"cha0s-sim/internal/discovery"
 	"cha0s-sim/internal/platform"
 	"cha0s-sim/internal/proxy"
 	"cha0s-sim/internal/security"
@@ -85,6 +86,14 @@ type App struct {
 	targetURL  string
 	configPath string
 
+	// registry passively records every unique (method, path) pair observed
+	// flowing through each running session, so the Rule Wizard can offer a
+	// "pick from what you've actually seen" list instead of a blank text
+	// field. In-memory only: it resets when the app restarts or a session
+	// stops (see discovery.Registry — persisting is a deliberate future
+	// enhancement).
+	registry *discovery.Registry
+
 	stressEngine  *stress.Engine
 	stressRunning bool
 	stressCancel  context.CancelFunc
@@ -124,6 +133,7 @@ func (s trafficEventSink) Emit(evt platform.Reportable) {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.sessions = make(map[sessionName]*proxySession)
+	a.registry = discovery.NewRegistry()
 
 	a.targetURL = defaultTargetURL
 	a.configPath = defaultConfigPath
@@ -232,8 +242,10 @@ func (a *App) StartSession(name string) string {
 	mode := modeForSession(sn)
 	// The session name is threaded through so every traffic event and security
 	// finding emitted by this session carries "chaos"/"security" attribution —
-	// the frontend uses it to keep per-session statistics honest.
-	srv := proxy.NewServerInstance(port, target, false, false, false, a.store, mode, string(sn), trafficEventSink{ctx: a.ctx})
+	// the frontend uses it to keep per-session statistics honest. The shared
+	// discovery registry rides along (mirroring how the sink is passed) so the
+	// Rule Wizard accumulates endpoints from exactly the sessions it serves.
+	srv := proxy.NewServerInstance(port, target, false, false, false, a.store, mode, string(sn), a.registry, trafficEventSink{ctx: a.ctx})
 
 	ps := &proxySession{srv: srv, running: true}
 	a.sessions[sn] = ps
@@ -268,7 +280,25 @@ func (a *App) StopSession(name string) string {
 
 	ps.running = false
 	ps.srv = nil
+	// Stale observed endpoints from this run must not linger for the next one
+	// (the registry is in-memory and session-scoped by design — see
+	// discovery.Registry.Clear).
+	a.registry.Clear(name)
 	return ""
+}
+
+// GetDiscoveredEndpoints returns the endpoints the given session ("chaos" or
+// "security") has been observed serving since it started, sorted by how many
+// times each was seen (most-frequent first). This is the Rule Wizard's "pick
+// from what you've actually seen" source: purely numeric path segments are
+// already collapsed to "{id}". Returns an empty list when the session has seen
+// no traffic. In-memory only: the list resets when the app restarts or the
+// session stops.
+func (a *App) GetDiscoveredEndpoints(sessionName string) []discovery.Endpoint {
+	if a.registry == nil {
+		return []discovery.Endpoint{}
+	}
+	return a.registry.List(sessionName)
 }
 
 // GetSessionStatus reports whether a named session is currently running.

@@ -10,6 +10,10 @@ export function GetAllSessionStatuses() {
   return window['go']['main']['App']['GetAllSessionStatuses']();
 }
 
+export function GetDiscoveredEndpoints(arg1) {
+  return window['go']['main']['App']['GetDiscoveredEndpoints'](arg1);
+}
+
 export function GetRuleCount() {
   return window['go']['main']['App']['GetRuleCount']();
 }
