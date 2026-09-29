@@ -2,6 +2,14 @@
   "$schema": "https://wails.io/schemas/config.v2.json",
   "name": "cha0s-sim-desktop",
   "outputfilename": "cha0s-sim-desktop",
+  "nsisType": "multiple",
+  "info": {
+    "companyName": "cha0s;sim",
+    "productName": "cha0s;sim",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright (c) 2026 Cj",
+    "comments": "Local chaos-injection and security-scanning proxy for testing frontend resilience."
+  },
   "frontend:install": "npm install",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",

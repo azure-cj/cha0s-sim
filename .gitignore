@@ -10,3 +10,9 @@ frontend/package.json.md5
 
 # Wails build output
 build/bin/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
