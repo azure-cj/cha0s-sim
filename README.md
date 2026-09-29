@@ -3,6 +3,10 @@
 A local chaos-injection and security-scanning proxy for testing frontend
 resilience.
 
+**Windows desktop app:** download the installer from
+[GitHub Releases](https://github.com/azure-cj/cha0s-sim/releases) — or
+[build from source](#building-from-source).
+
 ## What is this?
 
 cha0s;sim is a local proxy you run in front of your own backend so you can
@@ -46,7 +50,33 @@ hit your app for real, then flip it back off. It's a desktop console (Wails
 
 ![Rule wizard](docs/screenshots/rule-wizard.png)
 
-## Requirements
+## Installation
+
+The desktop app is **Windows only** — it is built with Wails and renders
+through the Edge WebView2 runtime.
+
+1. Download `cha0s-sim-desktop-amd64-installer.exe` from the
+   [Releases page](https://github.com/azure-cj/cha0s-sim/releases).
+2. Run it. The installer creates both a **Desktop shortcut** and a **Start
+   Menu entry**, and registers cha0s;sim under *Add or remove programs* so it
+   uninstalls normally.
+3. Launch it, open **Settings**, and point the app at your backend URL.
+
+> **Windows SmartScreen will likely warn you that the publisher is unknown.**
+> This is expected. cha0s;sim is an independent open-source project with no
+> paid code-signing certificate, so the installer is **unsigned** — Windows
+> flags all such binaries. If you trust the source, choose
+> *More info → Run anyway*. On Windows 11 you can also right-click the
+> downloaded `.exe` and pick *Properties → Unblock*, then run it.
+
+**The installer ships the desktop app only.** The headless `cha0s-sim` CLI is
+not included in it — CLI users need to [build it from
+source](#building-from-source).
+
+## Building requirements
+
+Only needed if you are building from source. Installing the released installer
+requires none of these.
 
 - Go 1.27.0 (see `go.mod`)
 - Node.js + npm (version not pinned in `package.json`; Wails frontend toolchain
@@ -55,6 +85,9 @@ hit your app for real, then flip it back off. It's a desktop console (Wails
 - Microsoft Edge WebView2 Runtime (Windows; preinstalled on Windows 11)
 
 ## Building from source
+
+Use this path if you want to run from a checkout, contribute, or build the CLI.
+If you just want to use the app, use the [installer](#installation) instead.
 
 ```sh
 git clone https://github.com/azure-cj/cha0s-sim.git
@@ -95,11 +128,15 @@ metrics on the dashboard.
 
 Cha0s-sim is a working local tool. The chaos, security, and stress engines are
 covered by the Go test suite and are driven from both the CLI and the desktop
-app. The desktop GUI is verified manually rather than by automated UI tests,
-the project is Windows-focused, and it is not yet packaged as an installer —
-you build the `.exe` yourself with `wails build`. Multi-step scenarios are
-currently CLI-only; the desktop app does not surface them yet. Compiled
-binaries are intentionally not committed (see `.gitignore`).
+app. The desktop GUI is verified manually rather than by automated UI tests, and
+the project is Windows-focused.
+
+The desktop app is distributed as an unsigned NSIS installer; there is no
+code-signing certificate, hence the SmartScreen warning described in
+[Installation](#installation). The CLI is not packaged and must be built from
+source. Multi-step scenarios are currently CLI-only; the desktop app does not
+surface them yet. Compiled binaries are intentionally not committed — they are
+attached to GitHub Releases as assets instead (see `.gitignore`).
 
 ## License
 
