@@ -40,15 +40,12 @@ hit your app for real, then flip it back off. It's a desktop console (Wails
 
 ## Screenshots
 
-<!-- Add a screenshot of the Dashboard here. The image paths below are
-     placeholders: no image files exist in the repo yet. Capture the running
-     app, drop the PNGs into docs/screenshots/, and they render as-is. -->
+<img width="1001" height="755" alt="image" src="https://github.com/user-attachments/assets/52f149dd-9210-42be-bba4-6d6fcacf5462" />
 
-![Dashboard](docs/screenshots/dashboard.png)
 
-<!-- Add a screenshot of the Chaos rule wizard here. -->
+<img width="998" height="725" alt="image" src="https://github.com/user-attachments/assets/888c00b4-8a64-4cf8-a4dc-01ca5a11d210" />
+<img width="997" height="721" alt="image" src="https://github.com/user-attachments/assets/7a160a85-75fe-4537-b995-8b131f1e37ca" />
 
-![Rule wizard](docs/screenshots/rule-wizard.png)
 
 ## Installation
 
