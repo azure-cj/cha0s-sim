@@ -390,6 +390,102 @@ function chaosMethodsDetail(r: main.RuleView): string {
     return `Methods: ${r.methods.join(', ')}`;
 }
 
+// ---------- per-rule live activity ----------
+
+// Per-rule activity is derived from the same in-memory entry buffer the
+// Dashboard and Scorecard already read, scoped to chaos traffic by
+// isChaosTraffic. That keeps these numbers from ever disagreeing with the log
+// on screen. The buffer holds the most recent 200 entries and is not
+// persisted, so the stats describe traffic currently in view, not all history.
+interface RuleActivity {
+    count: number; // traffic events in which this rule fired
+    last: TrafficEventPayload | null; // most recent such event
+    recent: LogEntry[]; // newest first, trimmed for display
+}
+
+const RULE_ACTIVITY_LIMIT = 5;
+
+// The proxy stamps every ChaosEffect with the name of the rule that produced
+// it, and one event can carry effects from several rules at once. Membership
+// (not effect count) is the attribution test, so a rule that contributed three
+// effects to one request still counts as one fire.
+function eventFiredRule(evt: TrafficEventPayload, ruleName: string): boolean {
+    return !!evt.effects?.some(e => e.rule === ruleName);
+}
+
+function ruleActivity(entries: LogEntry[], ruleName: string): RuleActivity {
+    const matches = entries.filter(
+        e => !!e.event && isChaosTraffic(e.sessionName) && eventFiredRule(e.event, ruleName)
+    );
+    return {
+        count: matches.length,
+        last: matches.length > 0 ? matches[0].event! : null,
+        recent: matches.slice(0, RULE_ACTIVITY_LIMIT),
+    };
+}
+
+// relativeTime is fed App's 1s clock so "12s ago" keeps counting down instead
+// of freezing at whatever the value was when the event arrived.
+function relativeTime(tsMs: number, nowMs: number): string {
+    const seconds = Math.max(0, Math.round((nowMs - tsMs) / 1000));
+    if (seconds < 5) return 'just now';
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    return `${Math.round(minutes / 60)}h ago`;
+}
+
+// Reports only what the events actually contain: how many times the rule fired,
+// how recently, and the status/duration of the newest one. It deliberately
+// stops short of judging whether chaos succeeded — that verdict belongs to the
+// Security session's findings, not to a status code.
+function ruleActivitySummary(activity: RuleActivity, nowMs: number): string {
+    const {count, last} = activity;
+    if (count === 0 || !last) return 'Not triggered yet in this session';
+    const firedAt = new Date(last.ts).getTime();
+    const ago = Number.isFinite(firedAt) ? `, ${relativeTime(firedAt, nowMs)}` : '';
+    const status = last.status === 0 ? 'DROP' : last.status;
+    return `Fired ${count} ${count === 1 ? 'time' : 'times'}${ago} \u00b7 last: ${status} (${last.duration_ms}ms)`;
+}
+
+// The disclosure reuses the rotating ChevronDown from the log's "HOW TO FIX"
+// rows so expansion reads the same everywhere in the app.
+function RuleActivityDetails({activity}: {activity: RuleActivity}) {
+    const [open, setOpen] = useState(false);
+    if (activity.count === 0) return null;
+    return (
+        <div className="chaos-row-activity">
+            <button
+                type="button"
+                className="chaos-activity-toggle"
+                onClick={() => setOpen(v => !v)}
+                aria-expanded={open}
+            >
+                <span className={`log-chevron${open ? ' log-chevron--open' : ''}`} aria-hidden="true">
+                    <ChevronDown size={14} strokeWidth={2} />
+                </span>
+                Recent activity
+                {activity.count > activity.recent.length && ` (last ${activity.recent.length})`}
+            </button>
+            {open && (
+                <ul className="chaos-activity-list">
+                    {activity.recent.map(entry => {
+                        const evt = entry.event as TrafficEventPayload;
+                        const status = evt.status === 0 ? 'DROP' : evt.status;
+                        return (
+                            <li className="chaos-activity-item" key={entry.id}>
+                                <span className="chaos-activity-time">{entry.time}</span>
+                                <span className="chaos-activity-request">{evt.method} {evt.path}</span>
+                                <span className="chaos-activity-result">{status} ({evt.duration_ms}ms)</span>
+                            </li>
+                        );
+                    })}
+                </ul>
+            )}
+        </div>
+    );
+}
+
 interface ChaosTag {
     kind: string;
     label: string; // icon + short plain-language label shown in the pill
@@ -514,7 +610,7 @@ function SettingsForm() {
     );
 }
 
-function ChaosEngine() {
+function ChaosEngine({entries, now}: {entries: LogEntry[]; now: number}) {
     const [rules, setRules] = useState<main.RuleView[]>([]);
     const [errors, setErrors] = useState<Record<string, string>>({});
     const [warnings, setWarnings] = useState<Record<string, string>>({});
@@ -704,6 +800,7 @@ function ChaosEngine() {
                     const err = errors[r.name];
                     const warn = warnings[r.name];
                     const tags = chaosTags(r);
+                    const activity = ruleActivity(entries, r.name);
                     return (
                         <div className="chaos-row" key={r.name}>
                             <div className="chaos-row-info">
@@ -723,6 +820,12 @@ function ChaosEngine() {
                                         ))}
                                     </div>
                                 )}
+                                <div
+                                    className={`chaos-row-activity-summary${activity.count === 0 ? ' chaos-row-activity-summary--idle' : ''}`}
+                                >
+                                    {ruleActivitySummary(activity, now)}
+                                </div>
+                                <RuleActivityDetails activity={activity} />
                                 {err && <div className="chaos-row-error">{err}</div>}
                                 {warn && <div className="chaos-row-warning">{warn}</div>}
                             </div>
@@ -2695,7 +2798,7 @@ function App() {
                 )}
 
                 {view === 'chaos' && (
-                    <ChaosEngine />
+                    <ChaosEngine entries={entries} now={now} />
                 )}
 
                 {view === 'security' && (
