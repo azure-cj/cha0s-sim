@@ -10,6 +10,9 @@ frontend/package.json.md5
 
 # Wails build output
 build/bin/
+# Wails overwrites this Go template in place with rendered values during
+# `wails build -nsis`, which dirties the tree on every installer build.
+build/windows/installer/wails_tools.nsh
 
 # OS / editor noise
 .DS_Store
