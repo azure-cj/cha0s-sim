@@ -33,7 +33,7 @@ func (s *collectingSink) next(t *testing.T) TrafficEvent {
 			if te, ok := evt.(TrafficEvent); ok {
 				return te
 			}
-			// Security findings flow through the same (Reportable-widened)
+			// Other reportable events flow through the same (Reportable-widened)
 			// sink; traffic-focused tests skip past them.
 		case <-time.After(5 * time.Second):
 			t.Fatal("timed out waiting for traffic event")

@@ -57,8 +57,7 @@ func Middleware(verbose bool, next http.Handler) http.Handler {
 		statusColor.Printf("%s %s -> %d (%s)\n", req.Method, req.URL.Path, recorder.statusCode, elapsed)
 
 		// Headers only on top of verbose; the same flag now gates the access
-		// line itself so a quiet CLI stays quiet (security findings are the
-		// CLI's always-on output, printed by the event sink, not here).
+		// line itself so a quiet CLI stays quiet.
 		headerList := ""
 		first := true
 		for name := range req.Header {

@@ -30,9 +30,7 @@ func discoveryProxy(t *testing.T, backendURL string, mode PipelineMode, sessionN
 // wiring: requests sent through a session-tagged server instance are recorded
 // into the registry as (method, path) pairs, numeric ID segments collapse to
 // the "{id}" placeholder, and repeated hits accumulate SeenCount instead of
-// duplicating entries. Uses the real chaos session's pipeline mode
-// (PipelineChaosOnly) so the backend's missing security headers produce no
-// findings, matching production.
+// duplicating entries.
 func TestRegistryAccumulatesObservedEndpointsThroughServer(t *testing.T) {
 	_, backendURL := newBackend(t)
 	reg := discovery.NewRegistry()
@@ -46,7 +44,7 @@ func TestRegistryAccumulatesObservedEndpointsThroughServer(t *testing.T) {
 		resp.Body.Close()
 	}
 	// health check: requests actually flowed through the event layer
-	if got := drainSink(t, sink); len(got.traffic) != 5 {
+	if got := collectEmitted(sink); len(got.traffic) != 5 {
 		t.Fatalf("got %d traffic events, want 5", len(got.traffic))
 	}
 
@@ -81,12 +79,11 @@ func TestRegistryAccumulatesObservedEndpointsThroughServer(t *testing.T) {
 }
 
 // TestRegistrySeparatesSessionsThroughServer proves session isolation holds at
-// the pipeline level: traffic through the "security" session is only visible in
-// that session's list, never bleeding into "chaos", even when both share the
-// same registry instance. Using each session's real pipeline mode also proves
-// recording happens outside the chaos middleware — PipelineSecurityOnly skips
-// the chaos layer entirely, yet still records (the record lives in the
-// event-sink layer, which every mode passes through).
+// the pipeline level: traffic through one session is only visible in that
+// session's list, never bleeding into another, even when both share the same
+// registry instance. Running each session under a different pipeline mode also
+// proves recording is independent of the pipeline stage — the record lives in
+// the event-sink layer, which every mode passes through.
 func TestRegistrySeparatesSessionsThroughServer(t *testing.T) {
 	_, backendURL := newBackend(t)
 	reg := discovery.NewRegistry()
@@ -98,20 +95,19 @@ func TestRegistrySeparatesSessionsThroughServer(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	secTS, secSink := discoveryProxy(t, backendURL, PipelineSecurityOnly, "security", reg)
+	otherTS, otherSink := discoveryProxy(t, backendURL, PipelineFull, "other", reg)
 	for _, path := range []string{"/health", "/health", "/login"} {
-		resp, err := http.Get(secTS.URL + path)
+		resp, err := http.Get(otherTS.URL + path)
 		if err != nil {
-			t.Fatalf("request %s through security session failed: %v", path, err)
+			t.Fatalf("request %s through other session failed: %v", path, err)
 		}
 		resp.Body.Close()
 	}
 
-	// Drain both sinks: the security session's scanner emits findings plus a
-	// traffic event per request, and a stalled sink would deadlock the test.
-	_ = drainSink(t, chaosSink)
-	if got := drainSink(t, secSink); len(got.traffic) != 3 {
-		t.Fatalf("got %d security traffic events, want 3", len(got.traffic))
+	// Drain both sinks so a stalled sink never deadlocks the test.
+	_ = collectEmitted(chaosSink)
+	if got := collectEmitted(otherSink); len(got.traffic) != 3 {
+		t.Fatalf("got %d other-session traffic events, want 3", len(got.traffic))
 	}
 
 	chaos := reg.List("chaos")
@@ -119,12 +115,12 @@ func TestRegistrySeparatesSessionsThroughServer(t *testing.T) {
 		t.Errorf("chaos list = %+v, want exactly [/api/users x1]", chaos)
 	}
 
-	sec := reg.List("security")
-	if len(sec) != 2 {
-		t.Fatalf("security list = %d endpoints, want 2", len(sec))
+	other := reg.List("other")
+	if len(other) != 2 {
+		t.Fatalf("other list = %d endpoints, want 2", len(other))
 	}
 	got := map[string]int{}
-	for _, e := range sec {
+	for _, e := range other {
 		got[e.Path] = e.SeenCount
 	}
 	if got["/health"] != 2 {

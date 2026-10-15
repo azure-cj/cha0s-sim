@@ -14,7 +14,6 @@ import (
 	"cha0s-sim/internal/discovery"
 	"cha0s-sim/internal/platform"
 	"cha0s-sim/internal/proxy"
-	"cha0s-sim/internal/security"
 	"cha0s-sim/internal/stress"
 )
 
@@ -30,18 +29,16 @@ const (
 type sessionName string
 
 const (
-	sessionChaos    sessionName = "chaos"
-	sessionSecurity sessionName = "security"
+	sessionChaos sessionName = "chaos"
 )
 
 // allSessions is the ordered list of every known session type. It drives
 // validation, iteration, and status reporting.
-var allSessions = []sessionName{sessionChaos, sessionSecurity}
+var allSessions = []sessionName{sessionChaos}
 
 // sessionPorts maps each session to its fixed, predictable listen port.
 var sessionPorts = map[sessionName]int{
-	sessionChaos:    8081,
-	sessionSecurity: 8082,
+	sessionChaos: 8081,
 }
 
 // proxySession holds the per-session server and its running state.
@@ -61,14 +58,11 @@ func validateSessionName(name string) bool {
 	return false
 }
 
-// modeForSession returns the pipeline mode each session should run under:
-// chaos runs only chaos rule firing, security runs only scanning.
+// modeForSession returns the pipeline mode each session should run under.
 func modeForSession(sn sessionName) proxy.PipelineMode {
 	switch sn {
 	case sessionChaos:
 		return proxy.PipelineChaosOnly
-	case sessionSecurity:
-		return proxy.PipelineSecurityOnly
 	default:
 		return proxy.PipelineFull
 	}
@@ -104,10 +98,9 @@ func NewApp() *App {
 	return &App{}
 }
 
-// trafficEventSink forwards proxy traffic events and security findings to the
-// frontend over Wails' event bus. It lives on an unexported type so its method
-// is NOT exposed as a frontend-callable binding — the frontend only subscribes
-// via EventsOn.
+// trafficEventSink forwards proxy traffic events to the frontend over Wails'
+// event bus. It lives on an unexported type so its method is NOT exposed as a
+// frontend-callable binding — the frontend only subscribes via EventsOn.
 type trafficEventSink struct {
 	ctx context.Context
 }
@@ -116,8 +109,6 @@ func (s trafficEventSink) Emit(evt platform.Reportable) {
 	switch v := evt.(type) {
 	case proxy.TrafficEvent:
 		runtime.EventsEmit(s.ctx, "traffic", v)
-	case security.Finding:
-		runtime.EventsEmit(s.ctx, "security_finding", v)
 	case StressUpdate:
 		runtime.EventsEmit(s.ctx, "stress_update", v)
 	default:
@@ -220,12 +211,12 @@ func (a *App) SaveSettings(targetURL string, configPath string) string {
 // Session management
 // ---------------------------------------------------------------------------
 
-// StartSession starts a named proxy session (e.g. "chaos", "security").
+// StartSession starts a named proxy session (e.g. "chaos").
 // Each session listens on its own fixed port and proxies to the shared target
 // URL. Returns an error message string (empty string means success).
 func (a *App) StartSession(name string) string {
 	if !validateSessionName(name) {
-		return fmt.Sprintf("unknown session %q — valid names: chaos, security", name)
+		return fmt.Sprintf("unknown session %q — valid names: chaos", name)
 	}
 
 	sn := sessionName(name)
@@ -240,11 +231,11 @@ func (a *App) StartSession(name string) string {
 
 	port := sessionPorts[sn]
 	mode := modeForSession(sn)
-	// The session name is threaded through so every traffic event and security
-	// finding emitted by this session carries "chaos"/"security" attribution —
-	// the frontend uses it to keep per-session statistics honest. The shared
-	// discovery registry rides along (mirroring how the sink is passed) so the
-	// Rule Wizard accumulates endpoints from exactly the sessions it serves.
+	// The session name is threaded through so every traffic event emitted by
+	// this session carries "chaos" attribution — the frontend uses it to keep
+	// per-session statistics honest. The shared discovery registry rides along
+	// (mirroring how the sink is passed) so the Rule Wizard accumulates
+	// endpoints from exactly the sessions it serves.
 	srv := proxy.NewServerInstance(port, target, false, false, false, a.store, mode, string(sn), a.registry, trafficEventSink{ctx: a.ctx})
 
 	ps := &proxySession{srv: srv, running: true}
@@ -263,7 +254,7 @@ func (a *App) StartSession(name string) string {
 // (empty string means success).
 func (a *App) StopSession(name string) string {
 	if !validateSessionName(name) {
-		return fmt.Sprintf("unknown session %q — valid names: chaos, security", name)
+		return fmt.Sprintf("unknown session %q — valid names: chaos", name)
 	}
 
 	sn := sessionName(name)
@@ -287,8 +278,8 @@ func (a *App) StopSession(name string) string {
 	return ""
 }
 
-// GetDiscoveredEndpoints returns the endpoints the given session ("chaos" or
-// "security") has been observed serving since it started, sorted by how many
+// GetDiscoveredEndpoints returns the endpoints the given session ("chaos")
+// has been observed serving since it started, sorted by how many
 // times each was seen (most-frequent first). This is the Rule Wizard's "pick
 // from what you've actually seen" source: purely numeric path segments are
 // already collapsed to "{id}". Returns an empty list when the session has seen
@@ -315,7 +306,7 @@ func (a *App) GetSessionStatus(name string) bool {
 }
 
 // GetAllSessionStatuses returns the running state of every known session in a
-// single call. Keys are the session name strings ("chaos", "security").
+// single call. Keys are the session name strings ("chaos").
 func (a *App) GetAllSessionStatuses() map[string]bool {
 	statuses := make(map[string]bool, len(allSessions))
 	for _, name := range allSessions {
@@ -472,7 +463,7 @@ type StressConfig struct {
 
 // StressUpdate is the live progress payload streamed to the frontend while a
 // stress test runs. It implements platform.Reportable so it flows through the
-// same EventSink as traffic events and security findings. Final distinguishes
+// same EventSink as traffic events. Final distinguishes
 // the last emission (the completed test's final snapshot) from the
 // intermediate 500ms progress ticks.
 type StressUpdate struct {
@@ -500,8 +491,7 @@ func (s StressUpdate) Severity() string {
 var _ platform.Reportable = StressUpdate{}
 
 // emitStressUpdate forwards a snapshot to the frontend via the shared
-// trafficEventSink (the same single event-emission path used by proxy traffic
-// and security findings).
+// trafficEventSink (the same single event-emission path used by proxy traffic).
 func (a *App) emitStressUpdate(snap stress.MetricsSnapshot, final bool) {
 	trafficEventSink{ctx: a.ctx}.Emit(StressUpdate{MetricsSnapshot: snap, Final: final})
 }

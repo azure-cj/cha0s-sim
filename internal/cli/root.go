@@ -57,9 +57,9 @@ var rootCmd = &cobra.Command{
 func run(port int, u *url.URL, preserveHost, insecureSkipVerify, verbose bool, adminPort int, runAdmin bool, store *config.Store) error {
 	// SessionName is "" for CLI-originated events: the plain CLI proxy has no
 	// session concept (it is not part of the desktop's session system). The
-	// stdout sink prints security findings to stdout regardless of the flag;
-	// per-request traffic lines are only shown with --verbose. The registry is
-	// nil too: endpoint discovery is a desktop-session feature with no CLI UI.
+	// stdout sink prints per-request traffic lines only with --verbose. The
+	// registry is nil too: endpoint discovery is a desktop-session feature with
+	// no CLI UI.
 	proxySrv := proxy.NewServerInstance(port, u, preserveHost, insecureSkipVerify, verbose, store, proxy.PipelineFull, "", nil, &stdoutSink{out: os.Stdout, verbose: verbose})
 
 	errCh := make(chan error, 2)

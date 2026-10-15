@@ -14,10 +14,10 @@ import (
 	"cha0s-sim/internal/platform"
 )
 
-// EventSink consumes platform.Reportable items (traffic events, security
-// findings, and any future reportable). The headless CLI passes no sink (nil —
-// nothing is emitted and behavior is unchanged); the desktop app provides a
-// sink that forwards events to the frontend.
+// EventSink consumes platform.Reportable items (traffic events and any future
+// reportable). The headless CLI passes no sink (nil — nothing is emitted and
+// behavior is unchanged); the desktop app provides a sink that forwards events
+// to the frontend.
 type EventSink interface {
 	Emit(evt platform.Reportable)
 }
@@ -31,18 +31,18 @@ type EventSink interface {
 // events from non-session contexts (e.g. the CLI's plain PipelineFull proxy,
 // which has no session concept and passes no event sink anyway).
 type TrafficEvent struct {
-	Ts         time.Time     `json:"ts"`          // when the request started
-	Method     string        `json:"method"`      // e.g. GET
-	Path       string        `json:"path"`        // request path (no query string)
-	Host       string        `json:"host"`        // Host header as received
-	Status     int           `json:"status"`      // 0 when the connection was dropped before any response
-	DurationMs int64         `json:"duration_ms"` // wall-clock time from start to response/drop
-	Effects    []ChaosEffect `json:"effects"`     // empty when the request passed through cleanly
-	SessionName string       `json:"sessionName"` // "chaos" / "security", or "" when not session-scoped
+	Ts          time.Time     `json:"ts"`          // when the request started
+	Method      string        `json:"method"`      // e.g. GET
+	Path        string        `json:"path"`        // request path (no query string)
+	Host        string        `json:"host"`        // Host header as received
+	Status      int           `json:"status"`      // 0 when the connection was dropped before any response
+	DurationMs  int64         `json:"duration_ms"` // wall-clock time from start to response/drop
+	Effects     []ChaosEffect `json:"effects"`     // empty when the request passed through cleanly
+	SessionName string        `json:"sessionName"` // "chaos", or "" when not session-scoped
 }
 
 // TrafficEvent implements platform.Reportable so live traffic flows through
-// the same aggregated platform event log as security findings.
+// the same aggregated platform event log as other reportable events.
 func (e TrafficEvent) Category() string { return "traffic" }
 
 func (e TrafficEvent) Summary() string {
@@ -75,9 +75,8 @@ type ChaosEffect struct {
 // unchanged) when sink is nil, which keeps the headless CLI path identical.
 //
 // sessionName is stamped into the request context (alongside the effects
-// holder) so BOTH the traffic event emitted here AND the security findings
-// emitted later by the scanner path (which only has the response, via
-// resp.Request.Context()) carry the originating session's identity.
+// holder) so the traffic event emitted here carries the originating session's
+// identity.
 //
 // registry, when non-nil, records each request into the passive endpoint
 // observer at exactly the point TrafficEvent is constructed — same session
@@ -104,7 +103,6 @@ func withEventSink(sessionName string, sink EventSink, registry *discovery.Regis
 		rec := &eventStatusRecorder{ResponseWriter: w}
 		effects := &eventEffects{}
 		ctx := context.WithValue(req.Context(), eventEffectsKey, effects)
-		ctx = context.WithValue(ctx, sessionNameKey, sessionName)
 		next.ServeHTTP(rec, req.WithContext(ctx))
 
 		sink.Emit(TrafficEvent{

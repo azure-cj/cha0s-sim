@@ -12,7 +12,7 @@ func TestValidateSessionName(t *testing.T) {
 		want bool
 	}{
 		{"chaos", true},
-		{"security", true},
+		{"security", false},
 		{"unknown", false},
 		{"", false},
 		{"Chaos", false},
@@ -29,9 +29,6 @@ func TestSessionPorts(t *testing.T) {
 	if sessionPorts[sessionChaos] != 8081 {
 		t.Errorf("chaos port = %d, want 8081", sessionPorts[sessionChaos])
 	}
-	if sessionPorts[sessionSecurity] != 8082 {
-		t.Errorf("security port = %d, want 8082", sessionPorts[sessionSecurity])
-	}
 }
 
 func TestModeForSession(t *testing.T) {
@@ -40,7 +37,6 @@ func TestModeForSession(t *testing.T) {
 		want proxy.PipelineMode
 	}{
 		{sessionChaos, proxy.PipelineChaosOnly},
-		{sessionSecurity, proxy.PipelineSecurityOnly},
 		{sessionName("unknown"), proxy.PipelineFull},
 	}
 	for _, c := range cases {
