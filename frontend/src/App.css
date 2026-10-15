@@ -1224,6 +1224,210 @@
     color: var(--text-primary);
 }
 
+/* ---------- chaos flow visualization ---------- */
+
+.chaos-flow {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-panel);
+    margin-bottom: 14px;
+}
+
+.chaos-flow-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 12px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    color: var(--text-primary);
+}
+
+.chaos-flow-title {
+    text-transform: uppercase;
+    font-weight: 700;
+}
+
+.chaos-flow-body {
+    padding: 2px 14px 12px;
+}
+
+.chaos-flow-canvas {
+    position: relative;
+    height: 108px;
+}
+
+/* Clips the full-width particle track so a burst never adds a horizontal
+   scrollbar, while leaving the node chips (siblings, not children) free to sit
+   at the edges without being cut off. */
+.flow-track {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.chaos-flow-lines {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.chaos-flow-lines line {
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.chaos-flow-idle {
+    padding: 24px 0;
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+.chaos-flow-caption {
+    margin-top: 8px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dim);
+}
+
+.flow-node {
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-elevated);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    z-index: 2;
+}
+
+.flow-node--app {
+    left: 8%;
+}
+
+.flow-node--proxy {
+    left: 50%;
+    border-color: var(--accent-primary);
+}
+
+.flow-node--backend {
+    left: 92%;
+}
+
+/* Expanding ring in the accent colour; currentColor avoids hardcoding the hex. */
+.flow-node-pulse {
+    position: absolute;
+    inset: -1px;
+    border-radius: 6px;
+    color: var(--accent-primary);
+    pointer-events: none;
+    animation: flow-proxy-pulse 700ms ease-out 1;
+}
+
+.flow-node-rule {
+    position: absolute;
+    top: calc(100% + 5px);
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--accent-bright);
+    white-space: nowrap;
+    animation: flow-rule-fade 1500ms ease-out 1 forwards;
+}
+
+/* Zero-size anchor placed on the track; children centre on it. */
+.flow-particle {
+    position: absolute;
+    top: 50%;
+    width: 0;
+    height: 0;
+    z-index: 1;
+    pointer-events: none;
+}
+
+.flow-particle-dot {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+}
+
+.flow-particle-detail {
+    position: absolute;
+    left: 0;
+    top: -16px;
+    transform: translateX(-50%);
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--accent-bright);
+    white-space: nowrap;
+}
+
+.flow-particle-status {
+    position: absolute;
+    left: 0;
+    top: -16px;
+    transform: translateX(-50%);
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--severity-critical);
+    white-space: nowrap;
+}
+
+.flow-particle-x {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform: translate(-50%, -50%);
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--severity-critical);
+}
+
+@keyframes flow-proxy-pulse {
+    0% { outline: 2px solid currentColor; outline-offset: 0; opacity: 1; }
+    100% { outline: 2px solid currentColor; outline-offset: 12px; opacity: 0; }
+}
+
+@keyframes flow-rule-fade {
+    0% { opacity: 0; }
+    12% { opacity: 1; }
+    70% { opacity: 1; }
+    100% { opacity: 0; }
+}
+
+/* Defence in depth: if the JS motion check was missed, don't animate. */
+@media (prefers-reduced-motion: reduce) {
+    .flow-node-pulse {
+        animation: none;
+    }
+    .flow-node-rule {
+        animation: none;
+    }
+}
+
 .chaos-row-tags {
     display: flex;
     flex-wrap: wrap;

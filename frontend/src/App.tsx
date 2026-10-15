@@ -36,6 +36,7 @@ import {
 } from "../wailsjs/go/main/App";
 import {config, discovery, main} from '../wailsjs/go/models';
 import bootBackground from './assets/images/boot-background.jpg';
+import {ChaosFlow} from './ChaosFlow';
 import './App.css';
 
 type Severity = 'info' | 'warning' | 'critical';
@@ -774,6 +775,7 @@ function ChaosEngine({entries, now}: {entries: LogEntry[]; now: number}) {
                 <span className="security-port">port {CHAOS_SESSION_PORT}</span>
                 {sessionError && <span className="settings-error">{sessionError}</span>}
             </div>
+            <ChaosFlow entries={entries} running={running} />
             <div className="chaos-summary">
                 You have {rules.length} {ruleWord} configured. {activeCount} {activeWord} currently active.
             </div>
