@@ -9,8 +9,6 @@ import {
     Crosshair,
     Dna,
     Flame,
-    Shield,
-    ShieldAlert,
     SlidersHorizontal,
     TrendingUp,
     Turtle,
@@ -52,15 +50,6 @@ interface TrafficEventPayload {
     effects?: {kind: string; detail: string; rule: string}[];
 }
 
-interface FindingPayload {
-    FindingCategory: string;
-    Detail: string;
-    FindingSeverity: string;
-    Location: string;
-    remediation: string; // 'how to fix' guidance emitted by the backend (json:"remediation")
-    sessionName: string;
-}
-
 interface StressUpdatePayload {
     totalRequests: number;
     totalErrors: number;
@@ -79,10 +68,8 @@ interface LogEntry {
     tsMs: number; // wall-clock ms when the entry arrived (drives suggestion expiry)
     severity: Severity;
     summary: string;
-    sessionName: string; // 'chaos', 'security', or '' for CLI-originated events
-    remediation?: string; // 'how to fix' guidance, only set on security-finding entries that have one
-    event?: TrafficEventPayload; // present only for traffic entries (not security findings)
-    finding?: FindingPayload;    // present only for security-finding entries
+    sessionName: string; // 'chaos', or '' for CLI-originated events
+    event?: TrafficEventPayload; // present only for traffic entries
 }
 
 // Suggestion badges on clean traffic events let beginners inject chaos onto an
@@ -95,14 +82,12 @@ interface SuggestionState {
 
 type SuggestionAction = 'latency' | 'error';
 
-type View = 'dashboard' | 'chaos' | 'stress' | 'security' | 'settings' | 'help';
+type View = 'dashboard' | 'chaos' | 'stress' | 'settings' | 'help';
 
-// Fixed session ports/names. MUST stay in sync with the backend's
-// sessionPorts map in app.go (sessionChaos -> 8081, sessionSecurity -> 8082).
+// Fixed session port/name. MUST stay in sync with the backend's sessionPorts
+// map in app.go (sessionChaos -> 8081).
 const CHAOS_SESSION_PORT = 8081;
 const CHAOS_SESSION_NAME = 'chaos';
-const SECURITY_SESSION_PORT = 8082;
-const SECURITY_SESSION_NAME = 'security';
 
 // The canonical set of named sessions shown in the Dashboard overview and the
 // persistent sidebar indicator. Stress Test is intentionally excluded: it is
@@ -110,7 +95,6 @@ const SECURITY_SESSION_NAME = 'security';
 // and has its own dedicated tab, so folding it in here would add confusion.
 const SESSION_OVERVIEW = [
     {name: CHAOS_SESSION_NAME, label: 'Chaos', port: CHAOS_SESSION_PORT, view: 'chaos' as View},
-    {name: SECURITY_SESSION_NAME, label: 'Security', port: SECURITY_SESSION_PORT, view: 'security' as View},
 ];
 
 const BOOT_WORDMARK = 'cha0s;sim';
@@ -138,12 +122,6 @@ function useTypewriter(text: string, speedMs: number): string {
 function trafficSeverity(status: number): Severity {
     if (status === 0 || status >= 500) return 'critical';
     if (status >= 400) return 'warning';
-    return 'info';
-}
-
-function normalizeSeverity(s: string): Severity {
-    if (s === 'critical') return 'critical';
-    if (s === 'warning') return 'warning';
     return 'info';
 }
 
@@ -178,7 +156,7 @@ function generateCurl(event: TrafficEventPayload, targetURL: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Resilience & Security Scorecard
+// Resilience Scorecard
 // ---------------------------------------------------------------------------
 
 // ScorecardStats is the derived snapshot the Dashboard's "Damage Control
@@ -190,11 +168,6 @@ interface ScorecardStats {
         total: number;   // traffic events seen
         mutated: number; // events that had at least one chaos effect fire
         hitRate: number; // mutated / total (0..1), 0 when total is 0
-    };
-    security: {
-        missingHeaders: number; // missing_header + weak_header findings
-        leakedSecrets: number;  // leaked_secret findings
-        findingCount: number;   // total security findings
     };
     performance: {
         present: boolean; // false when no stress data has been received
@@ -208,40 +181,24 @@ interface ScorecardStats {
 
 // An entry belongs to the "chaos" traffic scope if it came from the chaos
 // session, or is still un-tagged ('' — CLI-originated traffic that predates
-// session tagging). Security-health stats are scoped strictly to entries tagged
-// 'security', since findings only ever originate from the security session.
+// session tagging).
 function isChaosTraffic(sessionName: string): boolean {
     return sessionName === CHAOS_SESSION_NAME || sessionName === '';
 }
 
 // computeScorecard derives the certificate numbers from the combined log,
-// filtering by sessionName so the chaos hit rate and security-health counts are
-// scoped to their own session and are not diluted by the other session's
-// traffic. Only entries carrying a TrafficEventPayload count toward traffic
-// stats; only entries carrying a FindingPayload count toward security stats.
+// scoping the chaos hit rate to chaos traffic (isChaosTraffic) so CLI-originated
+// and session traffic are counted consistently. Only entries carrying a
+// TrafficEventPayload count toward traffic stats.
 function computeScorecard(entries: LogEntry[], stress: StressUpdatePayload | null): ScorecardStats {
     let trafficTotal = 0;
     let trafficMutated = 0;
-    let missingHeaders = 0;
-    let leakedSecrets = 0;
-    let findingCount = 0;
 
     for (const entry of entries) {
         if (entry.event && isChaosTraffic(entry.sessionName)) {
             trafficTotal += 1;
             if (entry.event.effects && entry.event.effects.length > 0) {
                 trafficMutated += 1;
-            }
-        }
-        if (entry.finding && entry.sessionName === SECURITY_SESSION_NAME) {
-            findingCount += 1;
-            if (entry.finding.FindingCategory === 'leaked_secret') {
-                leakedSecrets += 1;
-            } else if (
-                entry.finding.FindingCategory === 'missing_header' ||
-                entry.finding.FindingCategory === 'weak_header'
-            ) {
-                missingHeaders += 1;
             }
         }
     }
@@ -252,11 +209,6 @@ function computeScorecard(entries: LogEntry[], stress: StressUpdatePayload | nul
             total: trafficTotal,
             mutated: trafficMutated,
             hitRate: trafficTotal === 0 ? 0 : trafficMutated / trafficTotal,
-        },
-        security: {
-            missingHeaders,
-            leakedSecrets,
-            findingCount,
         },
         performance: {
             present: stress !== null,
@@ -300,11 +252,6 @@ function buildMarkdownReport(stats: ScorecardStats, opts: ReportContext): string
         `- Total requests processed: ${stats.traffic.total}`,
         `- Total mutated requests: ${stats.traffic.mutated}`,
         `- Chaos hit rate: ${pct(stats.traffic.hitRate)}`,
-        '',
-        '## Security Health',
-        `- Missing / weak headers: ${stats.security.missingHeaders}`,
-        `- Leaked secrets: ${stats.security.leakedSecrets}`,
-        `- Total findings: ${stats.security.findingCount}`,
         '',
     ];
     if (stats.performance.present) {
@@ -438,8 +385,7 @@ function relativeTime(tsMs: number, nowMs: number): string {
 
 // Reports only what the events actually contain: how many times the rule fired,
 // how recently, and the status/duration of the newest one. It deliberately
-// stops short of judging whether chaos succeeded — that verdict belongs to the
-// Security session's findings, not to a status code.
+// stops short of judging whether chaos succeeded.
 function ruleActivitySummary(activity: RuleActivity, nowMs: number): string {
     const {count, last} = activity;
     if (count === 0 || !last) return 'Not triggered yet in this session';
@@ -626,7 +572,7 @@ function ChaosEngine({entries, now}: {entries: LogEntry[]; now: number}) {
     const [busy, setBusy] = useState(false);
     const [sessionError, setSessionError] = useState('');
 
-    // Poll this session's running state, mirroring the Security view.
+    // Poll this session's running state.
     useEffect(() => {
         let cancelled = false;
         const poll = () => {
@@ -1894,182 +1840,6 @@ function StressTest() {
     );
 }
 
-// A security-finding log row with an expandable "How to fix" detail. Collapsed
-// by default so the feed stays scannable at a glance; clicking the row (or
-// pressing Enter/Space while focused) reveals the remediation text beneath the
-// one-line summary. Rows without remediation (defensive: an older backend) stay
-// plain and non-interactive. Shared by the Security tab and the Dashboard's
-// combined log so the expand behavior and markup stay identical; the Dashboard
-// opts into the per-session badge via showSession.
-function FindingLogRow({entry, showSession = false}: {entry: LogEntry; showSession?: boolean}) {
-    const [expanded, setExpanded] = useState(false);
-    const hasFix = !!entry.remediation;
-    const toggle = () => {
-        if (hasFix) setExpanded(v => !v);
-    };
-    const cls = ['log-entry', 'log-entry--finding']
-        .concat(hasFix ? ['log-entry--expandable'] : [])
-        .concat(expanded ? ['log-entry--expanded'] : [])
-        .join(' ');
-    return (
-        <div
-            className={cls}
-            onClick={toggle}
-            role={hasFix ? 'button' : undefined}
-            tabIndex={hasFix ? 0 : undefined}
-            aria-expanded={hasFix ? expanded : undefined}
-            onKeyDown={e => {
-                if (!hasFix) return;
-                if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    toggle();
-                }
-            }}
-            title={hasFix ? (expanded ? 'Hide how to fix this finding' : 'Show how to fix this finding') : undefined}
-        >
-            <span className="log-time">{entry.time}</span>
-            {showSession && entry.sessionName && (
-                <span className={`log-session log-session--${entry.sessionName}`}>
-                    {entry.sessionName === CHAOS_SESSION_NAME ? 'CHAOS' : 'SECURITY'}
-                </span>
-            )}
-            <span className={`log-dot log-dot--${entry.severity}`} />
-            <span className="log-summary">{entry.summary}</span>
-            {hasFix && (
-                <span className={`log-chevron${expanded ? ' log-chevron--open' : ''}`} aria-hidden="true">
-                    <ChevronDown size={14} strokeWidth={2} />
-                </span>
-            )}
-            {expanded && hasFix && (
-                <div className="log-remediation">
-                    <span className="log-remediation-label">HOW TO FIX</span>
-                    <div className="log-remediation-text">{entry.remediation}</div>
-                </div>
-            )}
-        </div>
-    );
-}
-
-// SecurityView is a dedicated, self-contained view for the "security" session
-// (an independent proxy session that runs ONLY the passive scanners, isolated
-// from the chaos session). It has its own Start/Stop controls, its own status
-// badge, and subscribes to the shared "security_finding" event stream while
-// running so findings render live without disturbing other views.
-function SecurityView() {
-    const [running, setRunning] = useState(false);
-    const [busy, setBusy] = useState(false);
-    const [error, setError] = useState('');
-    const [findings, setFindings] = useState<LogEntry[]>([]);
-    const findingId = useRef(0);
-
-    // Poll session status like other views refresh their state on an interval.
-    useEffect(() => {
-        let cancelled = false;
-        const poll = () => {
-            GetSessionStatus(SECURITY_SESSION_NAME).then(s => {
-                if (!cancelled) setRunning(s);
-            });
-        };
-        poll();
-        const id = window.setInterval(poll, 1000);
-        return () => {
-            cancelled = true;
-            window.clearInterval(id);
-        };
-    }, []);
-
-    // Subscribe to the live security_finding stream while the session runs;
-    // unsubscribe (and clear findings) when stopped or leaving the view.
-    useEffect(() => {
-        if (!running) {
-            setFindings([]);
-            return;
-        }
-        const off = EventsOn('security_finding', (data: any) => {
-            const f = data as FindingPayload;
-            findingId.current += 1;
-            const id = findingId.current;
-            const entry: LogEntry = {
-                id,
-                time: new Date().toLocaleTimeString(),
-                tsMs: Date.now(),
-                severity: normalizeSeverity(f.FindingSeverity),
-                summary: `${f.FindingCategory}: ${f.Detail}`,
-                sessionName: SECURITY_SESSION_NAME,
-                remediation: f.remediation,
-            };
-            setFindings(prev => [entry, ...prev].slice(0, 200));
-        });
-        return off;
-    }, [running]);
-
-    const start = () => {
-        setBusy(true);
-        setError('');
-        StartSession(SECURITY_SESSION_NAME).then(err => {
-            setBusy(false);
-            if (err) {
-                setError(err);
-                return;
-            }
-            GetSessionStatus(SECURITY_SESSION_NAME).then(setRunning);
-        });
-    };
-
-    const stop = () => {
-        setBusy(true);
-        setError('');
-        StopSession(SECURITY_SESSION_NAME).then(err => {
-            setBusy(false);
-            if (err) {
-                setError(err);
-                return;
-            }
-            GetSessionStatus(SECURITY_SESSION_NAME).then(setRunning);
-        });
-    };
-
-    return (
-        <div className="security">
-            <div className="security-title">SECURITY SCAN</div>
-            <div className="security-desc">
-                Passively checks your backend's responses for missing security headers and leaked
-                secrets, without touching your traffic.
-            </div>
-
-            <div className="security-controls">
-                <div className="security-status">
-                    <span className={`status-dot${running ? ' status-dot--running' : ''}`} />
-                    <span className="security-status-text">{running ? 'Running' : 'Stopped'}</span>
-                </div>
-                <button className="btn btn--primary" onClick={start} disabled={busy || running}>
-                    Start Scan
-                </button>
-                <button className="btn btn--danger" onClick={stop} disabled={busy || !running}>
-                    Stop Scan
-                </button>
-                <span className="security-port">port {SECURITY_SESSION_PORT}</span>
-                {error && <span className="settings-error">{error}</span>}
-            </div>
-
-            <div className="security-log">
-                <div className="security-log-title">LIVE FINDINGS</div>
-                <div className="log-panel">
-                    {findings.length === 0 && (
-                        <div className="log-empty">
-                            No findings yet. Start a scan and send some traffic to your backend to see
-                            results here.
-                        </div>
-                    )}
-                    {findings.map(e => (
-                        <FindingLogRow entry={e} key={e.id} />
-                    ))}
-                </div>
-            </div>
-        </div>
-    );
-}
-
 // A single "smart auto-suggestion" badge on a clean traffic event. Clicking it
 // injects a pre-filled chaos rule via the shared CreateRule binding; the badge
 // mirrors the async outcome inline (Adding… / Added / Failed) so a beginner
@@ -2118,7 +1888,7 @@ function ScorecardModal({stats, onClose, onCopy, copied, stressRunning, stressCo
     stressCompletedAt: string | null;
 }) {
     const pct = (v: number) => `${Math.round(v * 100)}%`;
-    const empty = stats.traffic.total === 0 && stats.security.findingCount === 0;
+    const empty = stats.traffic.total === 0;
     const perfStatus = stats.performance.present
         ? stressRunning
             ? SCORECARD_PERF_LIVE
@@ -2140,8 +1910,8 @@ function ScorecardModal({stats, onClose, onCopy, copied, stressRunning, stressCo
 
                 {empty && (
                     <div className="scorecard-empty">
-                        No traffic or findings recorded yet. Start a chaos/security session and send some
-                        requests before generating a report.
+                        No traffic recorded yet. Start the chaos session and send some requests before
+                        generating a report.
                     </div>
                 )}
 
@@ -2160,24 +1930,6 @@ function ScorecardModal({stats, onClose, onCopy, copied, stressRunning, stressCo
                             <div className="scorecard-row">
                                 <dt>Chaos hit rate</dt>
                                 <dd>{pct(stats.traffic.hitRate)}</dd>
-                            </div>
-                        </dl>
-                    </section>
-
-                    <section className="scorecard-section">
-                        <div className="scorecard-section-title">SECURITY HEALTH</div>
-                        <dl className="scorecard-list">
-                            <div className="scorecard-row">
-                                <dt>Missing / weak headers</dt>
-                                <dd>{stats.security.missingHeaders}</dd>
-                            </div>
-                            <div className="scorecard-row">
-                                <dt>Leaked secrets</dt>
-                                <dd>{stats.security.leakedSecrets}</dd>
-                            </div>
-                            <div className="scorecard-row">
-                                <dt>Total findings</dt>
-                                <dd>{stats.security.findingCount}</dd>
                             </div>
                         </dl>
                     </section>
@@ -2248,10 +2000,6 @@ const HELP_FAQS: {q: string; a: string}[] = [
         a: "It stops firing immediately for new traffic, and the change is saved to your config file. If the file couldn't be written (rare), you'll see a soft amber warning and the change only sticks for this session.",
     },
     {
-        q: 'Can I run Chaos and Security at the same time?',
-        a: "Yes. They are independent sessions on different ports (8081 for Chaos, 8082 for Security) that don't interfere with each other.",
-    },
-    {
         q: "Why don't my chaos rules ever fire?",
         a: "A rule only fires when it's enabled AND has a frequency set — a rule showing 'Never triggers' (0% error rate) never fires. Then make sure the request's path and method match the rule, and that traffic is actually going through the session's port (8081). Low-frequency rules (about 1 in 20) can also just miss small amounts of traffic.",
     },
@@ -2269,12 +2017,12 @@ const HELP_FAQS: {q: string; a: string}[] = [
     },
     {
         q: 'Does Stress Test use the same sessions?',
-        a: "No. Stress Test talks directly to the target URL from Settings and creates its own traffic, so it can run at the same time as Chaos and Security without affecting them or their ports.",
+        a: "No. Stress Test talks directly to the target URL from Settings and creates its own traffic, so it can run at the same time as the chaos session without affecting it or its port.",
     },
 ];
 
-// The FAQ rows reuse the exact expandable-row pattern from the "HOW TO FIX"
-// remediation rows (same ChevronDown chevron that rotates when opened).
+// The FAQ rows use the same ChevronDown chevron that rotates when opened, so
+// expansion reads the same everywhere in the app.
 function FaqItem({question, answer}: {question: string; answer: string}) {
     const [open, setOpen] = useState(false);
     return (
@@ -2305,18 +2053,10 @@ function HelpPage() {
                 </p>
                 <ol className="help-steps">
                     <li className="help-step"><span className="help-step-num">1</span>Open <strong>Settings</strong> and set the Target URL to your backend (e.g. http://localhost:3000).</li>
-                    <li className="help-step"><span className="help-step-num">2</span>Go to <strong>Chaos Engine</strong> or <strong>Security</strong> and hit Start — that opens a small proxy on port 8081 or 8082.</li>
+                    <li className="help-step"><span className="help-step-num">2</span>Go to <strong>Chaos Engine</strong> and hit Start — that opens a small proxy on port 8081.</li>
                     <li className="help-step"><span className="help-step-num">3</span>Send requests through that port (e.g. http://localhost:8081/api/users) from your app, the browser, Postman, or curl.</li>
-                    <li className="help-step"><span className="help-step-num">4</span>Watch the <strong>Dashboard</strong>: traffic fills the live event log, and with a rule enabled — or a suggestion badge clicked — you'll see chaos and security findings happen in real time.</li>
+                    <li className="help-step"><span className="help-step-num">4</span>Watch the <strong>Dashboard</strong>: traffic fills the live event log, and with a rule enabled — or a suggestion badge clicked — you'll see the chaos effects happen in real time.</li>
                 </ol>
-            </section>
-
-            <section className="help-section">
-                <h2 className="help-section-title">What's the difference between Chaos and Security?</h2>
-                <p className="help-panel">
-                    <strong>Chaos</strong> actively breaks your traffic on purpose — adding delay, faking errors, dropping connections, corrupting data — to see how your frontend handles failure.{' '}
-                    <strong>Security</strong> leaves traffic alone and passively watches responses for missing security headers and leaked secrets. They run independently and can both be on at once.
-                </p>
             </section>
 
             <section className="help-section">
@@ -2339,18 +2079,6 @@ function HelpPage() {
                 <p className="help-note">
                     Frequency decides how often an enabled rule fires — from every matching request down to about 1 in 20. A rule with no frequency never fires.
                 </p>
-            </section>
-
-            <section className="help-section">
-                <h2 className="help-section-title">Security Checks Explained</h2>
-                <p className="help-lead">The Security session watches your backend's responses for the following, without touching your traffic.</p>
-                <div className="help-list">
-                    <div className="help-row"><strong>Content-Security-Policy</strong><span>Controls which scripts and resources your pages are allowed to load; flagged when missing or weak.</span></div>
-                    <div className="help-row"><strong>Strict-Transport-Security (HSTS)</strong><span>Forces browsers to use HTTPS only; flagged when missing or lacking max-age.</span></div>
-                    <div className="help-row"><strong>X-Frame-Options</strong><span>Stops other sites embedding your page (clickjacking); must be DENY or SAMEORIGIN.</span></div>
-                    <div className="help-row"><strong>X-Content-Type-Options</strong><span>Stops browsers from guessing a response's file type; must be nosniff.</span></div>
-                    <div className="help-row"><strong>Leaked credentials</strong><span>Scans responses for exposed secrets — AWS access keys, private keys, JWTs, bearer tokens, API-key assignments — and flags them without ever printing the secret itself.</span></div>
-                </div>
             </section>
 
             <section className="help-section">
@@ -2381,7 +2109,7 @@ function App() {
     const [stressCompletedAt, setStressCompletedAt] = useState<string | null>(null);
     const [scorecardOpen, setScorecardOpen] = useState(false);
     const [reportCopied, setReportCopied] = useState(false);
-    const [logFilter, setLogFilter] = useState<'all' | 'chaos' | 'security'>('all');
+    const [logFilter, setLogFilter] = useState<'all' | 'chaos'>('all');
     const [rulesSummary, setRulesSummary] = useState<{active: number; total: number}>({active: 0, total: 0});
     const idRef = useRef(0);
     const copyTimer = useRef<number | null>(null);
@@ -2440,16 +2168,6 @@ function App() {
                 event: evt,
             });
         });
-        const offFinding = EventsOn('security_finding', (data: any) => {
-            const f = data as FindingPayload;
-            addEntry({
-                severity: normalizeSeverity(f.FindingSeverity),
-                summary: `${f.FindingCategory}: ${f.Detail}`,
-                sessionName: f.sessionName || '',
-                remediation: f.remediation,
-                finding: f,
-            });
-        });
         // Keep the latest stress snapshot so the scorecard can report final
         // p50/p95/p99 latency and error rate even after a run has finished.
         // The final flag distinguishes a live run from the last completed one,
@@ -2467,7 +2185,6 @@ function App() {
             if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
             if (reportTimer.current !== null) window.clearTimeout(reportTimer.current);
             offTraffic();
-            offFinding();
             offStress();
         };
     }, []);
@@ -2598,10 +2315,6 @@ function App() {
                         onClick={() => setView('chaos')}
                     >CHAOS ENGINE</button>
                     <button
-                        className={`nav-item${view === 'security' ? ' nav-item--active' : ''}`}
-                        onClick={() => setView('security')}
-                    >SECURITY</button>
-                    <button
                         className={`nav-item${view === 'stress' ? ' nav-item--active' : ''}`}
                         onClick={() => setView('stress')}
                     >STRESS TEST</button>
@@ -2639,7 +2352,6 @@ function App() {
                     <div className="topbar-title">
                         {view === 'dashboard' && 'DASHBOARD'}
                         {view === 'chaos' && 'CHAOS ENGINE'}
-                        {view === 'security' && 'SECURITY'}
                         {view === 'stress' && 'STRESS TEST'}
                         {view === 'settings' && 'SETTINGS'}
                         {view === 'help' && 'HELP'}
@@ -2651,18 +2363,15 @@ function App() {
                         <div className="kpi-strip">
                             {SESSION_OVERVIEW.map(session => {
                                 const isRunning = !!sessionStatus[session.name];
-                                const isChaos = session.name === CHAOS_SESSION_NAME;
                                 return (
                                     <button
                                         key={session.name}
-                                        className={`kpi-card kpi-card--button${isChaos ? ' kpi-card--chaos' : ' kpi-card--security'}`}
+                                        className="kpi-card kpi-card--button kpi-card--chaos"
                                         onClick={() => setView(session.view)}
                                     >
                                         <div className="kpi-head">
                                             <span className="kpi-icon">
-                                                {isChaos
-                                                    ? <Boxes size={15} strokeWidth={2.2} aria-hidden="true" />
-                                                    : <Shield size={15} strokeWidth={2.2} aria-hidden="true" />}
+                                                <Boxes size={15} strokeWidth={2.2} aria-hidden="true" />
                                             </span>
                                             <span className="kpi-label">{session.label} Session</span>
                                             <ArrowRight className="kpi-arrow" size={14} strokeWidth={2.2} aria-hidden="true" />
@@ -2677,49 +2386,29 @@ function App() {
                                     </button>
                                 );
                             })}
-                            {(() => {
-                                const trafficCount = entries.filter(e => e.event).length;
-                                const findings = entries.filter(e => e.finding);
-                                const criticalFindings = findings.filter(e => e.severity === 'critical').length;
-                                const hasCritical = criticalFindings > 0;
-                                return (
-                                    <>
-                                        <div className="kpi-card">
-                                            <div className="kpi-head">
-                                                <span className="kpi-icon"><Activity size={15} strokeWidth={2.2} aria-hidden="true" /></span>
-                                                <span className="kpi-label">Requests Seen</span>
-                                            </div>
-                                            <div className="kpi-value">{trafficCount}</div>
-                                            <div className="kpi-detail">traffic in live buffer</div>
-                                        </div>
-                                        <div className={`kpi-card${hasCritical ? ' kpi-card--danger' : findings.length > 0 ? ' kpi-card--good' : ''}`}>
-                                            <div className="kpi-head">
-                                                <span className="kpi-icon"><ShieldAlert size={15} strokeWidth={2.2} aria-hidden="true" /></span>
-                                                <span className="kpi-label">Findings</span>
-                                            </div>
-                                            <div className={`kpi-value${hasCritical ? ' kpi-value--critical' : findings.length > 0 ? ' kpi-value--good' : ''}`}>
-                                                {findings.length}
-                                            </div>
-                                            <div className="kpi-detail">{hasCritical ? `${criticalFindings} critical` : 'all clear'}</div>
-                                        </div>
-                                        <div className="kpi-card">
-                                            <div className="kpi-head">
-                                                <span className="kpi-icon"><SlidersHorizontal size={15} strokeWidth={2.2} aria-hidden="true" /></span>
-                                                <span className="kpi-label">Active Rules</span>
-                                            </div>
-                                            <div className="kpi-value kpi-value--accent">{rulesSummary.active}</div>
-                                            <div className="kpi-detail">{rulesSummary.total} total rule{rulesSummary.total === 1 ? '' : 's'}</div>
-                                        </div>
-                                    </>
-                                );
-                            })()}
+                            <div className="kpi-card">
+                                <div className="kpi-head">
+                                    <span className="kpi-icon"><Activity size={15} strokeWidth={2.2} aria-hidden="true" /></span>
+                                    <span className="kpi-label">Requests Seen</span>
+                                </div>
+                                <div className="kpi-value">{entries.filter(e => e.event).length}</div>
+                                <div className="kpi-detail">traffic in live buffer</div>
+                            </div>
+                            <div className="kpi-card">
+                                <div className="kpi-head">
+                                    <span className="kpi-icon"><SlidersHorizontal size={15} strokeWidth={2.2} aria-hidden="true" /></span>
+                                    <span className="kpi-label">Active Rules</span>
+                                </div>
+                                <div className="kpi-value kpi-value--accent">{rulesSummary.active}</div>
+                                <div className="kpi-detail">{rulesSummary.total} total rule{rulesSummary.total === 1 ? '' : 's'}</div>
+                            </div>
                         </div>
                         <div className="log-wrap">
                             <div className="log-title-row">
-                                <div className="log-title">LIVE EVENT LOG — traffic + security_finding</div>
+                                <div className="log-title">LIVE EVENT LOG — traffic</div>
                                 <div className="log-title-actions">
                                     <div className="log-filter">
-                                        {(['all', 'chaos', 'security'] as const).map(f => (
+                                        {(['all', 'chaos'] as const).map(f => (
                                             <button
                                                 key={f}
                                                 className={`log-filter-btn${logFilter === f ? ' log-filter-btn--active' : ''}${f !== 'all' ? ` log-filter-btn--${f}` : ''}`}
@@ -2744,9 +2433,6 @@ function App() {
                                     </div>
                                 )}
                                 {entries.filter(e => logFilter === 'all' || e.sessionName === logFilter).map(e => {
-                                    if (e.finding) {
-                                        return <FindingLogRow entry={e} showSession key={e.id} />;
-                                    }
                                     const evt = e.event;
                                     const isCopied = copiedId === e.id;
                                     // Suggest chaos only for clean traffic events
@@ -2760,7 +2446,7 @@ function App() {
                                             <span className="log-time">{e.time}</span>
                                             {e.sessionName && (
                                                 <span className={`log-session log-session--${e.sessionName}`}>
-                                                    {e.sessionName === CHAOS_SESSION_NAME ? 'CHAOS' : 'SECURITY'}
+                                                    CHAOS
                                                 </span>
                                             )}
                                             <span className={`log-dot log-dot--${e.severity}`} />
@@ -2801,10 +2487,6 @@ function App() {
 
                 {view === 'chaos' && (
                     <ChaosEngine entries={entries} now={now} />
-                )}
-
-                {view === 'security' && (
-                    <SecurityView />
                 )}
 
                 {view === 'stress' && (
