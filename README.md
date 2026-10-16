@@ -1,7 +1,7 @@
 # cha0s;sim
 
-A local chaos-injection and security-scanning proxy for testing frontend
-resilience.
+A local reverse proxy that injects real faults into real HTTP traffic, to test
+frontend resilience.
 
 **Windows desktop app:** download the installer from
 [GitHub Releases](https://github.com/azure-cj/cha0s-sim/releases) — or
@@ -9,11 +9,13 @@ resilience.
 
 ## What is this?
 
-cha0s;sim is a local proxy you run in front of your own backend so you can
-break the stuff that eats services in production — chaos effects, dropped and
-dead-slow responses, missing security headers, leaked secrets — and watch it
-hit your app for real, then flip it back off. It's a desktop console (Wails
-+ Go + React) with a headless CLI that drives the same rule engine.
+cha0s;sim is a local reverse proxy you run in front of your own backend. It
+injects real faults into real HTTP traffic — latency, faked errors, dropped
+connections, corrupted payloads, and malicious-looking input — so you can watch
+how your frontend actually behaves under failure, then switch it back off.
+There are no simulated services: every request is forwarded to your real
+backend. It's a desktop console (Wails + Go + React) with a headless CLI that
+drives the same rule engine.
 
 ## Features
 
@@ -21,9 +23,6 @@ hit your app for real, then flip it back off. It's a desktop console (Wails
   `status_override`, `drop_connection`, `mangle`, and `fuzz`. Rules are
   hot-reloaded from `chaos.yaml`/JSON, gated by `error_rate`, and target a
   path or regex.
-- **Passive security scanning** — the `security` session passes traffic
-  through and flags missing/weak security headers and leaked secrets, with
-  per-finding remediation suggestions.
 - **Stress testing** — flat (the default), ramp (`continuous`), stepped, and
   spike load shapes, with p50/p95/p99 latency reporting, run headlessly or
   from the desktop app.
@@ -33,10 +32,20 @@ hit your app for real, then flip it back off. It's a desktop console (Wails
 - **No-YAML rule builder** — the desktop wizard lists endpoints discovered
   passively from traffic your app has already sent through the proxy, so you
   can pick one and create a rule without hand-writing YAML.
-- **Session isolation** — Chaos and Security run on separate ports/sessions
-  with separate metric tracks; each event is tagged with its session.
-- **Desktop dashboard** — a live event feed, endpoint registry, and a
-  stress/chaos metrics console in a single Wails app.
+- **Chaos session on a fixed port** — the proxy listens on one fixed port
+  (8081 in the desktop app) and tags every event with its session name, so the
+  metrics console and the log stay scoped to that session.
+- **Desktop dashboard** — a live event feed, the Chaos Flow traffic
+  visualization, an endpoint registry, a stress/chaos metrics console, and a
+  shareable "Damage Control Certificate" scorecard in a single Wails app.
+
+## What changed
+
+The **Security** scanning session from v0.1.0 has been removed. cha0s;sim is now
+chaos-only: the passive scan of response headers and bodies for missing security
+headers and leaked secrets is gone, along with its `security` session (port
+8082) and its dashboard view. The v0.1.0 GitHub release still contains that
+feature; this removal ships in the next release.
 
 ## Screenshots
 
@@ -116,14 +125,13 @@ cha0s-sim stress scenario --file configs/scenario.example.yaml \
   --target http://localhost:3000 --vus 3 --duration 30s
 ```
 
-In the desktop app: open Settings and point the app at your backend URL (the
-chaos and security sessions share it and each listens on its own fixed port),
-create rules via the wizard, then start a session and watch the live feed and
-metrics on the dashboard.
+In the desktop app: open Settings and point the app at your backend URL,
+create rules via the wizard, then start the chaos session (fixed port 8081) and
+watch the live feed, Chaos Flow, and metrics on the dashboard.
 
 ## Project status
 
-Cha0s-sim is a working local tool. The chaos, security, and stress engines are
+Cha0s-sim is a working local tool. The chaos and stress engines are
 covered by the Go test suite and are driven from both the CLI and the desktop
 app. The desktop GUI is verified manually rather than by automated UI tests, and
 the project is Windows-focused.
@@ -134,6 +142,22 @@ code-signing certificate, hence the SmartScreen warning described in
 source. Multi-step scenarios are currently CLI-only; the desktop app does not
 surface them yet. Compiled binaries are intentionally not committed — they are
 attached to GitHub Releases as assets instead (see `.gitignore`).
+
+## Known limitations
+
+- **Windows only** — the desktop app renders through the Edge WebView2 runtime
+  and ships as a Windows installer.
+- **Unsigned builds** — there is no code-signing certificate, so Windows
+  SmartScreen warns on the installer (see
+  [Installation](#installation)).
+- **No auto-update** — you update by downloading a new installer from the
+  [Releases page](https://github.com/azure-cj/cha0s-sim/releases).
+- **Multi-step scenarios are CLI-only** — the desktop app does not surface them
+  yet (`stress scenario --file`).
+- **Copy-as-cURL captures the method and URL only** — traffic events do not
+  record request headers, body, or query string.
+- **No automated GUI tests** — the Go test suite covers the engines; the desktop
+  UI is verified manually.
 
 ## License
 
