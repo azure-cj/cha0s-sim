@@ -64,23 +64,37 @@ func ChaosMiddleware(store *config.Store, next http.Handler) http.Handler {
 
 // recordEffects appends every fired rule's effects to the shared holder. It runs
 // after the request injectors so a latency effect can report the delay actually
-// applied (the jittered value is only known once the injector has run).
+// applied and a fuzz effect only appears when the body was really mutated (both
+// are known only once the injectors have run).
 func recordEffects(effects *eventEffects, fired []chaos.FiredRule) {
 	for _, fr := range fired {
-		effects.effects = append(effects.effects, effectsForRule(fr.Rule, appliedLatencyMs(fr))...)
+		effects.effects = append(effects.effects, effectsForRule(fr.Rule, appliedStateFor(fr))...)
 	}
 }
 
-// appliedLatencyMs returns the delay a fired rule's latency injector applied for
-// this request, or 0 when the rule has no latency injector or it never ran
-// (e.g. a drop injector short-circuited the request first).
-func appliedLatencyMs(fr chaos.FiredRule) int64 {
+// appliedState is the per-request outcome of a rule's request-side injectors,
+// used to report what actually happened rather than what was merely configured.
+type appliedState struct {
+	latencyMs   int64
+	fuzzApplied bool
+	fuzzFields  int
+}
+
+// appliedStateFor reads the state the fired rule's request injectors recorded
+// while running. An injector that never ran (e.g. one that followed a drop)
+// contributes its zero value.
+func appliedStateFor(fr chaos.FiredRule) appliedState {
+	var st appliedState
 	for _, injector := range fr.ReqInject {
-		if lat, ok := injector.(*chaos.LatencyInjector); ok {
-			return lat.AppliedMs
+		switch inj := injector.(type) {
+		case *chaos.LatencyInjector:
+			st.latencyMs = inj.AppliedMs
+		case *chaos.FuzzInjector:
+			st.fuzzApplied = inj.Applied
+			st.fuzzFields = inj.FieldsMutated
 		}
 	}
-	return 0
+	return st
 }
 
 func injectorsFromFired(fired []chaos.FiredRule) (reqInjectors []chaos.RequestInjector, respInjectors []chaos.ResponseInjector) {

@@ -152,9 +152,10 @@ func (r *eventStatusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 
 // effectsForRule maps a fired rule to its chaos effects. The gating conditions
 // mirror chaos.BuildInjectors so the reported effects match what was actually
-// built and run. latencyMs is the delay the rule's latency injector actually
-// applied for this request (0 when it has none or never ran).
-func effectsForRule(rule config.Rule, latencyMs int64) []ChaosEffect {
+// built and run. applied carries the per-request outcome of the rule's
+// request-side injectors (real latency, whether fuzz mutated the body), so only
+// effects that actually happened are reported.
+func effectsForRule(rule config.Rule, applied appliedState) []ChaosEffect {
 	var out []ChaosEffect
 
 	if rule.DropConnection {
@@ -192,7 +193,15 @@ func effectsForRule(rule config.Rule, latencyMs int64) []ChaosEffect {
 		if detail == "" {
 			detail = "latency"
 		}
-		out = append(out, ChaosEffect{Kind: "latency", Detail: detail, Rule: rule.Name, DelayMs: latencyMs})
+		out = append(out, ChaosEffect{Kind: "latency", Detail: detail, Rule: rule.Name, DelayMs: applied.latencyMs})
+	}
+
+	if rule.Fuzz != nil && applied.fuzzApplied {
+		out = append(out, ChaosEffect{
+			Kind:   "fuzz",
+			Detail: fmt.Sprintf("%s: %d field(s)", rule.Fuzz.Strategy, applied.fuzzFields),
+			Rule:   rule.Name,
+		})
 	}
 
 	return out

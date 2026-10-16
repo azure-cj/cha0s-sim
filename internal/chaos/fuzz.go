@@ -33,6 +33,11 @@ var fuzzPayloads = map[string]string{
 type FuzzInjector struct {
 	Strategy   string
 	TargetKeys []string
+	// Applied reports whether the most recent InjectRequest actually mutated
+	// the body, and FieldsMutated how many distinct string fields it replaced.
+	// Callers read them after InjectRequest to report fuzz on the traffic event.
+	Applied       bool
+	FieldsMutated int
 }
 
 func NewFuzzInjector(cfg *config.FuzzConfig) *FuzzInjector {
@@ -84,18 +89,18 @@ func (f *FuzzInjector) InjectRequest(w http.ResponseWriter, r *http.Request) boo
 	}
 
 	payload := fuzzPayloads[f.Strategy]
-	changed := false
+	mutated := make(map[string]struct{})
 	for _, key := range eligible {
 		// Fuzzing payloads are string-injection attacks: only substitute into
 		// string fields. Numbers/bools/nulls/nested objects are left alone —
 		// type corruption is the mangler's job, a separate feature.
 		if _, isString := obj[key].(string); isString {
 			obj[key] = payload
-			changed = true
+			mutated[key] = struct{}{}
 		}
 	}
 
-	if !changed {
+	if len(mutated) == 0 {
 		r.Body = io.NopCloser(bytes.NewReader(original))
 		return false
 	}
@@ -109,6 +114,9 @@ func (f *FuzzInjector) InjectRequest(w http.ResponseWriter, r *http.Request) boo
 	r.Body = io.NopCloser(bytes.NewReader(newBytes))
 	r.ContentLength = int64(len(newBytes))
 	r.Header.Set("Content-Length", strconv.Itoa(len(newBytes)))
+
+	f.Applied = true
+	f.FieldsMutated = len(mutated)
 
 	return false
 }

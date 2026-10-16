@@ -188,5 +188,51 @@ func TestFuzzContentLengthHeaderAndFieldUpdated(t *testing.T) {
 	}
 }
 
+func TestFuzzRecordsAppliedStateOnMutation(t *testing.T) {
+	req := jsonReq(t, `{"email": "a@b.com", "role": "admin", "userId": 1}`)
+	f := NewFuzzInjector(&config.FuzzConfig{Strategy: FuzzSQLi, TargetKeys: []string{"email", "role", "userId"}})
+	assertAlwaysReturnsFalse(t, f, req)
+
+	if !f.Applied {
+		t.Error("Applied = false, want true after mutating string fields")
+	}
+	if f.FieldsMutated != 2 {
+		t.Errorf("FieldsMutated = %d, want 2 (email and role; userId is non-string)", f.FieldsMutated)
+	}
+}
+
+func TestFuzzAppliedStateFalseWhenNothingMutated(t *testing.T) {
+	cases := []struct {
+		name        string
+		contentType string
+		body        string
+		targets     []string
+	}{
+		{name: "non-json content type", contentType: "application/x-www-form-urlencoded", body: "name=alice", targets: []string{"name"}},
+		{name: "no string fields", contentType: "application/json", body: `{"count": 5, "active": true}`, targets: []string{"count", "active"}},
+		{name: "malformed json", contentType: "application/json", body: "{{{{", targets: []string{"x"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, "http://localhost:8080/api/echo", bytes.NewReader([]byte(tc.body)))
+			if err != nil {
+				t.Fatalf("failed to build request: %v", err)
+			}
+			req.Header.Set("Content-Type", tc.contentType)
+			req.ContentLength = int64(len(tc.body))
+
+			f := NewFuzzInjector(&config.FuzzConfig{Strategy: FuzzSQLi, TargetKeys: tc.targets})
+			assertAlwaysReturnsFalse(t, f, req)
+
+			if f.Applied {
+				t.Error("Applied = true, want false (nothing was mutated)")
+			}
+			if f.FieldsMutated != 0 {
+				t.Errorf("FieldsMutated = %d, want 0", f.FieldsMutated)
+			}
+		})
+	}
+}
+
 // compile-time check that FuzzInjector satisfies RequestInjector
 var _ RequestInjector = (*FuzzInjector)(nil)

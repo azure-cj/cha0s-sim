@@ -1,11 +1,14 @@
 package proxy
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -236,6 +239,146 @@ rules:
 	}
 	if !reported {
 		t.Errorf("Effects = %v, want a latency effect carrying the applied delay", evt.Effects)
+	}
+}
+
+func TestEventReportsFuzzEffectForMutatedBody(t *testing.T) {
+	var received string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received = string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(backend.Close)
+
+	store := writeStore(t, `
+rules:
+  - name: "fuzz users"
+    enabled: true
+    path: "/api/users"
+    error_rate: 1.0
+    fuzz:
+      strategy: sqli
+      target_keys: ["email", "role"]
+`)
+	sink := newCollectingSink()
+	tsURL := eventProxy(t, backend.URL, store, sink, "")
+
+	resp, err := http.Post(tsURL+"/api/users", "application/json", strings.NewReader(`{"email":"a@b.com","role":"admin","userId":1}`))
+	if err != nil {
+		t.Fatalf("request through proxy failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	evt := sink.next(t)
+	var fuzz *ChaosEffect
+	for i := range evt.Effects {
+		if evt.Effects[i].Kind == "fuzz" {
+			fuzz = &evt.Effects[i]
+		}
+	}
+	if fuzz == nil {
+		t.Fatalf("Effects = %v, want a fuzz effect", evt.Effects)
+	}
+	if fuzz.Detail != "sqli: 2 field(s)" {
+		t.Errorf("fuzz Detail = %q, want %q", fuzz.Detail, "sqli: 2 field(s)")
+	}
+	if fuzz.Rule != "fuzz users" {
+		t.Errorf("fuzz Rule = %q, want %q", fuzz.Rule, "fuzz users")
+	}
+	if fuzz.DelayMs != 0 {
+		t.Errorf("fuzz DelayMs = %d, want 0", fuzz.DelayMs)
+	}
+
+	var got map[string]interface{}
+	if err := json.Unmarshal([]byte(received), &got); err != nil {
+		t.Fatalf("backend received %q, which did not unmarshal: %v", received, err)
+	}
+	if got["email"] != `' OR '1'='1` {
+		t.Errorf("backend email = %v, want SQLi payload", got["email"])
+	}
+	if got["role"] != `' OR '1'='1` {
+		t.Errorf("backend role = %v, want SQLi payload", got["role"])
+	}
+	if got["userId"] != float64(1) {
+		t.Errorf("backend userId = %v, want untouched 1 (non-string)", got["userId"])
+	}
+}
+
+func TestEventOmitsFuzzEffectWhenBodyNotMutated(t *testing.T) {
+	_, backendURL := newBackend(t)
+	store := writeStore(t, `
+rules:
+  - name: "fuzz users"
+    enabled: true
+    path: "/api/users"
+    error_rate: 1.0
+    fuzz:
+      strategy: sqli
+      target_keys: ["email"]
+`)
+	sink := newCollectingSink()
+	tsURL := eventProxy(t, backendURL, store, sink, "")
+
+	// email is a number, so the fuzz injector has no string field to mutate.
+	resp, err := http.Post(tsURL+"/api/users", "application/json", strings.NewReader(`{"email":123}`))
+	if err != nil {
+		t.Fatalf("request through proxy failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	evt := sink.next(t)
+	for _, e := range evt.Effects {
+		if e.Kind == "fuzz" {
+			t.Errorf("Effects = %v, want no fuzz effect (body was not mutated)", evt.Effects)
+		}
+	}
+}
+
+func TestEventReportsFuzzAndLatencyTogether(t *testing.T) {
+	_, backendURL := newBackend(t)
+	store := writeStore(t, `
+rules:
+  - name: "fuzz and slow"
+    enabled: true
+    path: "/api/users"
+    error_rate: 1.0
+    latency:
+      fixed_ms: 7
+    fuzz:
+      strategy: xss
+      target_keys: ["email"]
+`)
+	sink := newCollectingSink()
+	tsURL := eventProxy(t, backendURL, store, sink, "")
+
+	resp, err := http.Post(tsURL+"/api/users", "application/json", strings.NewReader(`{"email":"a@b.com"}`))
+	if err != nil {
+		t.Fatalf("request through proxy failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	evt := sink.next(t)
+	var sawFuzz, sawLatency bool
+	for _, e := range evt.Effects {
+		switch e.Kind {
+		case "fuzz":
+			sawFuzz = true
+			if e.Detail != "xss: 1 field(s)" {
+				t.Errorf("fuzz Detail = %q, want %q", e.Detail, "xss: 1 field(s)")
+			}
+			if e.DelayMs != 0 {
+				t.Errorf("fuzz DelayMs = %d, want 0", e.DelayMs)
+			}
+		case "latency":
+			sawLatency = true
+			if e.DelayMs != 7 {
+				t.Errorf("latency DelayMs = %d, want 7", e.DelayMs)
+			}
+		}
+	}
+	if !sawFuzz || !sawLatency {
+		t.Errorf("Effects = %v, want both a fuzz and a latency effect", evt.Effects)
 	}
 }
 
