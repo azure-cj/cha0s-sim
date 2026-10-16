@@ -23,8 +23,8 @@ interface FlowEntry {
     event?: FlowEvent;
 }
 
-// passthrough = neutral colour; the other four map to an explicit visual.
-type FlowOutcome = 'passthrough' | 'latency' | 'override' | 'mangle' | 'drop';
+// passthrough = neutral colour; every other outcome maps to an explicit visual.
+type FlowOutcome = 'passthrough' | 'latency' | 'override' | 'mangle' | 'fuzz' | 'drop';
 
 interface FlowClassification {
     outcome: FlowOutcome;
@@ -56,8 +56,9 @@ function isChaosTraffic(sessionName: string): boolean {
 
 // Maps a completed traffic event to a single visual outcome. Precedence mirrors
 // how overlapping effects are reported on one request: a dropped connection
-// dominates everything, then a status override, then mangle, then latency;
-// anything else is a plain pass-through. Pure: no rendering, no side effects.
+// dominates everything, then a status override, then mangle, then fuzz, then
+// latency; anything else is a plain pass-through. Pure: no rendering, no side
+// effects.
 function classifyEvent(evt: FlowEvent): FlowClassification {
     const effects = evt.effects ?? [];
     const kinds = new Set(effects.map(e => e.kind));
@@ -69,6 +70,12 @@ function classifyEvent(evt: FlowEvent): FlowClassification {
     }
     if (kinds.has('mangle')) {
         return {outcome: 'mangle', detail: null, statusLabel: null, pauseMs: 0};
+    }
+    if (kinds.has('fuzz')) {
+        const fuzz = effects.find(e => e.kind === 'fuzz');
+        // Fuzz outranks latency visually, but a latency effect on the same
+        // request still holds the particle at the proxy for its real pause.
+        return {outcome: 'fuzz', detail: fuzz ? fuzz.detail : null, statusLabel: null, pauseMs: kinds.has('latency') ? latencyPauseMs(effects) : 0};
     }
     if (kinds.has('latency')) {
         const latency = effects.find(e => e.kind === 'latency');
@@ -287,6 +294,7 @@ export function ChaosFlow({entries, running}: {entries: FlowEntry[]; running: bo
                                 let color = 'var(--text-dim)';
                                 if (p.outcome === 'override' && afterProxy) color = 'var(--severity-critical)';
                                 else if (p.outcome === 'mangle' && afterProxy) color = 'var(--log-chaos)';
+                                else if (p.outcome === 'fuzz' && afterProxy) color = 'var(--log-security)';
                                 // Only the dot fades for a drop; the × lingers.
                                 let dotOpacity = 1;
                                 if (p.outcome === 'drop' && elapsed > FLOW_SEGMENT_MS) {
@@ -295,10 +303,14 @@ export function ChaosFlow({entries, running}: {entries: FlowEntry[]; running: bo
                                 const showLatency = p.outcome === 'latency' && !!p.detail
                                     && elapsed >= FLOW_SEGMENT_MS
                                     && elapsed <= FLOW_SEGMENT_MS + p.pauseMs;
+                                // Fuzz has no hold of its own, so its detail label
+                                // rides along from the proxy to the backend.
+                                const showFuzz = p.outcome === 'fuzz' && !!p.detail && elapsed >= FLOW_SEGMENT_MS;
                                 return (
                                     <div key={p.id} className="flow-particle" style={{left: `${flowX(p, elapsed)}%`}}>
                                         <span className="flow-particle-dot" style={{background: color, opacity: dotOpacity}} />
                                         {showLatency && <span className="flow-particle-detail">{p.detail}</span>}
+                                        {showFuzz && <span className="flow-particle-detail">{p.detail}</span>}
                                         {p.outcome === 'override' && p.statusLabel && afterProxy && (
                                             <span className="flow-particle-status">{p.statusLabel}</span>
                                         )}
