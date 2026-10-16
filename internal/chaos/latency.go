@@ -12,7 +12,12 @@ type LatencyInjector struct {
 	FixedMs     int
 	JitterMinMs int
 	JitterMaxMs int
-	sleepFunc   func(time.Duration)
+	// AppliedMs records the delay applied by the most recent InjectRequest,
+	// in milliseconds. Callers read it after InjectRequest to report the real
+	// (jittered) latency on the traffic event.
+	AppliedMs int64
+	sleepFunc func(time.Duration)
+	randIntn  func(n int) int
 }
 
 func NewLatencyInjector(cfg *config.LatencyConfig) *LatencyInjector {
@@ -21,6 +26,7 @@ func NewLatencyInjector(cfg *config.LatencyConfig) *LatencyInjector {
 		JitterMinMs: cfg.JitterMinMs,
 		JitterMaxMs: cfg.JitterMaxMs,
 		sleepFunc:   time.Sleep,
+		randIntn:    rand.Intn,
 	}
 }
 
@@ -31,11 +37,13 @@ func (li *LatencyInjector) InjectRequest(w http.ResponseWriter, r *http.Request)
 		if li.JitterMaxMs < li.JitterMinMs {
 			delay = time.Duration(li.JitterMinMs) * time.Millisecond
 		} else {
-			delay = time.Duration(li.JitterMinMs+rand.Intn(li.JitterMaxMs-li.JitterMinMs+1)) * time.Millisecond
+			delay = time.Duration(li.JitterMinMs+li.randIntn(li.JitterMaxMs-li.JitterMinMs+1)) * time.Millisecond
 		}
 	} else if li.FixedMs > 0 {
 		delay = time.Duration(li.FixedMs) * time.Millisecond
 	}
+
+	li.AppliedMs = delay.Milliseconds()
 
 	if delay > 0 {
 		li.sleepFunc(delay)

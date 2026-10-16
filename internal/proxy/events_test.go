@@ -150,11 +150,21 @@ rules:
 		t.Errorf("Effects kinds = %v, want both latency and override", kinds)
 	}
 	for _, e := range evt.Effects {
-		if e.Kind == "override" && e.Detail != "=> 503 (body stripped)" {
-			t.Errorf("override detail = %q, want %q", e.Detail, "=> 503 (body stripped)")
+		if e.Kind == "override" {
+			if e.Detail != "=> 503 (body stripped)" {
+				t.Errorf("override detail = %q, want %q", e.Detail, "=> 503 (body stripped)")
+			}
+			if e.DelayMs != 0 {
+				t.Errorf("override DelayMs = %d, want 0 (non-latency effect)", e.DelayMs)
+			}
 		}
-		if e.Kind == "latency" && e.Detail != "+10ms" {
-			t.Errorf("latency detail = %q, want %q", e.Detail, "+10ms")
+		if e.Kind == "latency" {
+			if e.Detail != "+10ms" {
+				t.Errorf("latency detail = %q, want %q", e.Detail, "+10ms")
+			}
+			if e.DelayMs != 10 {
+				t.Errorf("latency DelayMs = %d, want 10 (fixed_ms)", e.DelayMs)
+			}
 		}
 	}
 }
@@ -183,9 +193,49 @@ rules:
 	var kinds []string
 	for _, e := range evt.Effects {
 		kinds = append(kinds, e.Kind)
+		if e.DelayMs != 0 {
+			t.Errorf("%s effect DelayMs = %d, want 0 (drop rule has no latency)", e.Kind, e.DelayMs)
+		}
 	}
 	if !contains(kinds, "drop") {
 		t.Errorf("Effects kinds = %v, want a drop effect", kinds)
+	}
+}
+
+func TestEventReportsAppliedJitterDelay(t *testing.T) {
+	_, backendURL := newBackend(t)
+	store := writeStore(t, `
+rules:
+  - name: "slow auth"
+    enabled: true
+    path: "/api/auth"
+    error_rate: 1.0
+    latency:
+      jitter_min_ms: 5
+      jitter_max_ms: 15
+`)
+	sink := newCollectingSink()
+	tsURL := eventProxy(t, backendURL, store, sink, "")
+
+	resp, err := http.Get(tsURL + "/api/auth")
+	if err != nil {
+		t.Fatalf("request through proxy failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	evt := sink.next(t)
+	reported := false
+	for _, e := range evt.Effects {
+		if e.Kind != "latency" {
+			continue
+		}
+		reported = true
+		if e.DelayMs < 5 || e.DelayMs > 15 {
+			t.Errorf("jitter DelayMs = %d, want within [5, 15]", e.DelayMs)
+		}
+	}
+	if !reported {
+		t.Errorf("Effects = %v, want a latency effect carrying the applied delay", evt.Effects)
 	}
 }
 

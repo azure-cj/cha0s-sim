@@ -26,10 +26,10 @@ type EventSink interface {
 // through the proxy. It combines request identity, measured latency/status,
 // and the chaos effects that actually fired for that request.
 //
-// SessionName identifies which named session ("chaos" or "security") produced
-// the event, so consumers can separate events by session. It is empty for
-// events from non-session contexts (e.g. the CLI's plain PipelineFull proxy,
-// which has no session concept and passes no event sink anyway).
+// SessionName identifies which named session ("chaos") produced the event, so
+// consumers can separate events by session. It is empty for events from
+// non-session contexts (e.g. the CLI's plain PipelineFull proxy, which has no
+// session concept and passes no event sink anyway).
 type TrafficEvent struct {
 	Ts          time.Time     `json:"ts"`          // when the request started
 	Method      string        `json:"method"`      // e.g. GET
@@ -65,9 +65,10 @@ var _ platform.Reportable = TrafficEvent{}
 
 // ChaosEffect attributes a single chaos action to the rule that caused it.
 type ChaosEffect struct {
-	Kind   string `json:"kind"`   // latency | override | drop | mangle
-	Detail string `json:"detail"` // human-readable specifics, e.g. "+250ms", "=> 503"
-	Rule   string `json:"rule"`   // name of the rule that fired
+	Kind    string `json:"kind"`     // latency | override | drop | mangle
+	Detail  string `json:"detail"`   // human-readable specifics, e.g. "+250ms", "=> 503"
+	Rule    string `json:"rule"`     // name of the rule that fired
+	DelayMs int64  `json:"delay_ms"` // latency actually applied, in ms; 0 for non-latency effects
 }
 
 // withEventSink wraps the full server handler so that a live trace of every
@@ -151,8 +152,9 @@ func (r *eventStatusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 
 // effectsForRule maps a fired rule to its chaos effects. The gating conditions
 // mirror chaos.BuildInjectors so the reported effects match what was actually
-// built and run.
-func effectsForRule(rule config.Rule) []ChaosEffect {
+// built and run. latencyMs is the delay the rule's latency injector actually
+// applied for this request (0 when it has none or never ran).
+func effectsForRule(rule config.Rule, latencyMs int64) []ChaosEffect {
 	var out []ChaosEffect
 
 	if rule.DropConnection {
@@ -190,7 +192,7 @@ func effectsForRule(rule config.Rule) []ChaosEffect {
 		if detail == "" {
 			detail = "latency"
 		}
-		out = append(out, ChaosEffect{Kind: "latency", Detail: detail, Rule: rule.Name})
+		out = append(out, ChaosEffect{Kind: "latency", Detail: detail, Rule: rule.Name, DelayMs: latencyMs})
 	}
 
 	return out

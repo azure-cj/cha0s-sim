@@ -25,10 +25,9 @@ func New(target *url.URL, preserveHost bool, insecureSkipVerify bool, store *con
 	return proxy
 }
 
-// PipelineMode selects how a server instance is invoked. It historically
-// distinguished chaos-only, security-only, and full pipelines; with the passive
-// security scanners removed, every mode now runs the chaos pipeline only and
-// the value no longer changes behavior.
+// PipelineMode selects how a server instance is invoked. Every mode now runs
+// the same chaos pipeline, so the value no longer changes behavior; it is kept
+// only to preserve the existing call sites and session wiring.
 type PipelineMode int
 
 const (

@@ -86,3 +86,55 @@ func TestMalformedJitterDefensivelyUsesMin(t *testing.T) {
 		t.Errorf("delay = %v, want 1000ms (defensive min fallback)", got)
 	}
 }
+
+func TestAppliedMsRecordsFixedDelay(t *testing.T) {
+	li := NewLatencyInjector(&config.LatencyConfig{FixedMs: 500})
+	li.sleepFunc = func(d time.Duration) {}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "http://x/", nil)
+
+	if li.AppliedMs != 0 {
+		t.Errorf("AppliedMs = %d before InjectRequest, want 0", li.AppliedMs)
+	}
+	li.InjectRequest(w, r)
+	if li.AppliedMs != 500 {
+		t.Errorf("AppliedMs = %d, want 500", li.AppliedMs)
+	}
+}
+
+func TestAppliedMsMatchesJitteredDelaySlept(t *testing.T) {
+	li := NewLatencyInjector(&config.LatencyConfig{JitterMinMs: 500, JitterMaxMs: 2500})
+	li.randIntn = func(n int) int {
+		if n != 2001 {
+			t.Errorf("randIntn arg = %d, want 2001 (max-min+1)", n)
+		}
+		return 42
+	}
+	var slept time.Duration
+	li.sleepFunc = func(d time.Duration) { slept = d }
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "http://x/", nil)
+
+	li.InjectRequest(w, r)
+	if slept != 542*time.Millisecond {
+		t.Errorf("slept %v, want 542ms (500+42)", slept)
+	}
+	if li.AppliedMs != 542 {
+		t.Errorf("AppliedMs = %d, want 542 and equal the slept duration", li.AppliedMs)
+	}
+}
+
+func TestAppliedMsZeroForZeroConfig(t *testing.T) {
+	li := NewLatencyInjector(&config.LatencyConfig{})
+	li.sleepFunc = func(d time.Duration) {}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "http://x/", nil)
+
+	li.InjectRequest(w, r)
+	if li.AppliedMs != 0 {
+		t.Errorf("AppliedMs = %d, want 0", li.AppliedMs)
+	}
+}
