@@ -47,7 +47,7 @@ interface TrafficEventPayload {
     status: number;
     duration_ms: number;
     sessionName: string;
-    effects?: {kind: string; detail: string; rule: string}[];
+    effects?: {kind: string; detail: string; rule: string; delay_ms?: number}[];
 }
 
 interface StressUpdatePayload {

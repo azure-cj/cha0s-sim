@@ -9,6 +9,7 @@ interface FlowEffect {
     kind: string;
     detail: string;
     rule: string;
+    delay_ms?: number;
 }
 
 interface FlowEvent {
@@ -29,6 +30,7 @@ interface FlowClassification {
     outcome: FlowOutcome;
     detail: string | null; // latency Detail string, shown beside the proxy
     statusLabel: string | null; // override status, shown at the Backend end
+    pauseMs: number; // proxy hold for this particle, 0 unless latency
 }
 
 interface FlowParticle extends FlowClassification {
@@ -39,7 +41,8 @@ interface FlowParticle extends FlowClassification {
 
 const FLOW_PARTICLE_CAP = 30; // hard ceiling on simultaneous particles
 const FLOW_SEGMENT_MS = 520; // travel time for each half of the journey
-const FLOW_LATENCY_PAUSE_MS = 600; // fixed, illustrative hold at the proxy
+const FLOW_LATENCY_PAUSE_MS = 600; // fallback proxy hold when no applied delay is reported
+const FLOW_LATENCY_MAX_MS = 2000; // display cap for reconstructed latency
 const FLOW_DROP_FADE_MS = 420; // fade-out once a dropped dot stops at the proxy
 const FLOW_RENDER_INTERVAL_MS = 1000 / 30; // cap renders at roughly 30fps
 
@@ -59,28 +62,37 @@ function classifyEvent(evt: FlowEvent): FlowClassification {
     const effects = evt.effects ?? [];
     const kinds = new Set(effects.map(e => e.kind));
     if (kinds.has('drop') || evt.status === 0) {
-        return {outcome: 'drop', detail: null, statusLabel: null};
+        return {outcome: 'drop', detail: null, statusLabel: null, pauseMs: 0};
     }
     if (kinds.has('override')) {
-        return {outcome: 'override', detail: null, statusLabel: evt.status ? `HTTP ${evt.status}` : null};
+        return {outcome: 'override', detail: null, statusLabel: evt.status ? `HTTP ${evt.status}` : null, pauseMs: 0};
     }
     if (kinds.has('mangle')) {
-        return {outcome: 'mangle', detail: null, statusLabel: null};
+        return {outcome: 'mangle', detail: null, statusLabel: null, pauseMs: 0};
     }
     if (kinds.has('latency')) {
         const latency = effects.find(e => e.kind === 'latency');
-        return {outcome: 'latency', detail: latency ? latency.detail : null, statusLabel: null};
+        return {outcome: 'latency', detail: latency ? latency.detail : null, statusLabel: null, pauseMs: latencyPauseMs(effects)};
     }
-    return {outcome: 'passthrough', detail: null, statusLabel: null};
+    return {outcome: 'passthrough', detail: null, statusLabel: null, pauseMs: 0};
 }
 
-function flowPauseMs(outcome: FlowOutcome): number {
-    return outcome === 'latency' ? FLOW_LATENCY_PAUSE_MS : 0;
+// Proxy hold for a latency event, taken from the delay the proxy actually
+// applied. Falls back to the illustrative pause when no applied delay is
+// reported, sums when several latency effects fire on one request, and caps for
+// display so a very slow rule does not stall the animation.
+function latencyPauseMs(effects: FlowEffect[]): number {
+    let total = 0;
+    for (const e of effects) {
+        if (e.kind !== 'latency') continue;
+        total += typeof e.delay_ms === 'number' && e.delay_ms > 0 ? e.delay_ms : FLOW_LATENCY_PAUSE_MS;
+    }
+    return Math.min(total, FLOW_LATENCY_MAX_MS);
 }
 
-function flowLifetimeMs(outcome: FlowOutcome): number {
-    if (outcome === 'drop') return FLOW_SEGMENT_MS + FLOW_DROP_FADE_MS;
-    return FLOW_SEGMENT_MS * 2 + flowPauseMs(outcome);
+function flowLifetimeMs(classification: FlowClassification): number {
+    if (classification.outcome === 'drop') return FLOW_SEGMENT_MS + FLOW_DROP_FADE_MS;
+    return FLOW_SEGMENT_MS * 2 + classification.pauseMs;
 }
 
 function lerp(a: number, b: number, t: number): number {
@@ -95,9 +107,8 @@ function flowX(p: FlowParticle, elapsed: number): number {
     }
     if (p.outcome === 'drop') return FLOW_X_PROXY; // stops dead at the proxy
     const afterSeg = elapsed - FLOW_SEGMENT_MS;
-    const pause = flowPauseMs(p.outcome);
-    if (afterSeg <= pause) return FLOW_X_PROXY;
-    return lerp(FLOW_X_PROXY, FLOW_X_BACKEND, (afterSeg - pause) / FLOW_SEGMENT_MS);
+    if (afterSeg <= p.pauseMs) return FLOW_X_PROXY;
+    return lerp(FLOW_X_PROXY, FLOW_X_BACKEND, (afterSeg - p.pauseMs) / FLOW_SEGMENT_MS);
 }
 
 // ChaosFlow animates chaos-session traffic through a three-node diagram. It only
@@ -219,7 +230,7 @@ export function ChaosFlow({entries, running}: {entries: FlowEntry[]; running: bo
             particlesRef.current.push({
                 id: particleIdRef.current,
                 startTs: now,
-                lifetime: flowLifetimeMs(classification.outcome),
+                lifetime: flowLifetimeMs(classification),
                 ...classification,
             });
         }
@@ -272,7 +283,7 @@ export function ChaosFlow({entries, running}: {entries: FlowEntry[]; running: bo
                             </svg>
                             {particles.map(p => {
                                 const elapsed = now - p.startTs;
-                                const afterProxy = elapsed > FLOW_SEGMENT_MS + flowPauseMs(p.outcome);
+                                const afterProxy = elapsed > FLOW_SEGMENT_MS + p.pauseMs;
                                 let color = 'var(--text-dim)';
                                 if (p.outcome === 'override' && afterProxy) color = 'var(--severity-critical)';
                                 else if (p.outcome === 'mangle' && afterProxy) color = 'var(--log-chaos)';
@@ -283,7 +294,7 @@ export function ChaosFlow({entries, running}: {entries: FlowEntry[]; running: bo
                                 }
                                 const showLatency = p.outcome === 'latency' && !!p.detail
                                     && elapsed >= FLOW_SEGMENT_MS
-                                    && elapsed <= FLOW_SEGMENT_MS + FLOW_LATENCY_PAUSE_MS;
+                                    && elapsed <= FLOW_SEGMENT_MS + p.pauseMs;
                                 return (
                                     <div key={p.id} className="flow-particle" style={{left: `${flowX(p, elapsed)}%`}}>
                                         <span className="flow-particle-dot" style={{background: color, opacity: dotOpacity}} />
@@ -317,7 +328,7 @@ export function ChaosFlow({entries, running}: {entries: FlowEntry[]; running: bo
                         <div className="chaos-flow-idle">Start the Chaos session to see traffic flow</div>
                     )}
                     <div className="chaos-flow-caption">
-                        Animation is reconstructed from completed requests; pauses are illustrative.
+                        Animation is reconstructed from completed requests; delays over 2s are capped for display.
                     </div>
                 </div>
             )}
